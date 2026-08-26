@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: dente-de-cobra-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements-deploy.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URL
+        sync: false          # cole a connection string do MongoDB Atlas
+      - key: DB_NAME
+        value: dente_de_cobra
+      - key: JWT_SECRET
+        generateValue: true  # o Render gera um segredo forte automaticamente
+      - key: ADMIN_EMAIL
+        value: admin@dentedecobra.com
+      - key: ADMIN_PASSWORD
+        sync: false          # defina a NOVA senha do admin no painel do Render
+      - key: CORS_ORIGINS
+        value: https://xitios660-ctrl.github.io

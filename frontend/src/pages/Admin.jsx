@@ -103,6 +103,8 @@ export default function Admin() {
   }, [user, loadOrders]);
 
   useEffect(() => {
+    const saved = localStorage.getItem("ddc_token");
+    if (saved) axios.defaults.headers.common["Authorization"] = `Bearer ${saved}`;
     axios
       .get(`${API}/api/auth/me`, { withCredentials: true })
       .then((r) => {
@@ -123,6 +125,7 @@ export default function Admin() {
         { withCredentials: true }
       );
       axios.defaults.headers.common["Authorization"] = `Bearer ${r.data.access_token}`;
+      localStorage.setItem("ddc_token", r.data.access_token);
       setUser(r.data);
       loadOrders();
     } catch (err) {
@@ -140,6 +143,7 @@ export default function Admin() {
       /* ignore */
     }
     delete axios.defaults.headers.common["Authorization"];
+    localStorage.removeItem("ddc_token");
     setUser(false);
     setOrders([]);
   };
