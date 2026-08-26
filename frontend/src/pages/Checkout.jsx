@@ -19,7 +19,7 @@ import { useCart } from "../context/CartContext";
 import { maskCep } from "../components/ShippingCalculator";
 import { orderWhatsAppUrl } from "../lib/whatsapp";
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
 const PAYMENTS = [
   { id: "pix", label: "PIX", desc: "Pagamento instantâneo. Chave enviada no WhatsApp.", icon: Zap },

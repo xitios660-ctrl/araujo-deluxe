@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, Loader2, MapPin, Truck } from "lucide-react";
 import { formatBRL } from "../mock";
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
 export const maskCep = (v) => {
   const d = v.replace(/\D/g, "").slice(0, 8);

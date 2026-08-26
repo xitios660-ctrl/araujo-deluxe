@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { brand, formatBRL } from "../mock";
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
 const STATUS_OPTIONS = [
   { id: "aguardando_pagamento", label: "Aguardando pagamento", color: "text-amber-300 border-amber-400/40 bg-amber-400/10" },

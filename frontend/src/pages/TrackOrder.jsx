@@ -17,7 +17,7 @@ import {
 import { brand, formatBRL } from "../mock";
 import { orderWhatsAppUrl } from "../lib/whatsapp";
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
 const STATUS_FLOW = [
   { id: "aguardando_pagamento", label: "Aguardando pagamento", desc: "Finalize o pagamento pelo WhatsApp para liberar o envio.", icon: Wallet },

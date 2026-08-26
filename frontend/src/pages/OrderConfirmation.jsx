@@ -6,7 +6,7 @@ import { Check, Loader2, MapPin, Send, Truck } from "lucide-react";
 import { formatBRL } from "../mock";
 import { orderWhatsAppUrl } from "../lib/whatsapp";
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 
 export default function OrderConfirmation() {
   const { orderNumber } = useParams();
