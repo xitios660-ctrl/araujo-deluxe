@@ -1,4 +1,5 @@
 name: Deploy Loja Dente de Cobra (GitHub Pages)
+# build v2 - conectado ao backend Render
 
 on:
   push:
