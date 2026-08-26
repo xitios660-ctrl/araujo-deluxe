@@ -2,32 +2,36 @@
 
 ## Problema
 Loja fullstack (React + FastAPI + MongoDB) construída no Emergent, salva no GitHub
-(xitios660-ctrl/Dente-de-macaco). GitHub Pages abria em branco (index.html modelo
-publicado sem o build). Usuário quer a loja publicada no GitHub Pages.
+(xitios660-ctrl/Dente-de-macaco). GitHub Pages abria em branco. Objetivo: loja
+publicada e FUNCIONANDO no GitHub Pages.
 
-## Arquitetura
-- Frontend: React 19 (CRA + craco), react-router (agora HashRouter p/ Pages)
-- Backend: FastAPI (server.py) — /api/shipping (ViaCEP + tabela regional),
-  /api/orders, /api/auth (JWT + bloqueio 5 tentativas), /api/admin/orders
-- DB: MongoDB (orders, users, login_attempts)
+## Arquitetura FINAL (no ar)
+- Frontend: React (CRA+craco), HashRouter -> GitHub Pages
+  URL: https://xitios660-ctrl.github.io/Dente-de-macaco/
+  Publicação automática via GitHub Actions (.github/workflows/deploy.yml)
+- Backend: FastAPI no Render (free) -> https://dente-de-cobra-api.onrender.com
+  Configurado por render.yaml (Blueprint) + backend/requirements-deploy.txt
+- DB: MongoDB Atlas M0 (cluster teste.xr7mji0), user "Dente"
+- Ligação: repo variable REACT_APP_BACKEND_URL (Actions) apontando pro Render
 
-## Feito nesta sessão (Ago/2026)
-- Trazido o código real do repo para o ambiente (era só template antes)
-- SEGURANÇA: aposentada a senha exposta `cobra2026` -> nova senha admin;
-  novo JWT_SECRET (openssl 32 bytes); backend/.env fora do git (.gitignore)
-- Configurado para GitHub Pages:
-  - `homepage` em frontend/package.json -> .../Dente-de-macaco
-  - BrowserRouter -> HashRouter (rotas /admin, /rastreio funcionam no Pages)
-  - Workflow .github/workflows/deploy.yml (build + deploy automatico via Actions)
-  - Build validado localmente (compila para /Dente-de-macaco/)
-- Testado local: login admin OK, frete CEP OK, frontend 200, loja renderiza
+## Feito (Ago/2026)
+- Código real trazido do repo (era template antes)
+- SEGURANÇA: senha exposta `cobra2026` aposentada; novo JWT
+- Pages: homepage + HashRouter + workflow Actions (build/deploy automatico)
+- Admin: persistencia de login via localStorage (funciona cross-domain Pages<->Render)
+- Fase 2 concluida: Atlas + Render + variavel + rebuild
+- TESTADO NO AR: API health OK, login admin OK (gugu123), frete/CEP OK,
+  checkout cria pedido (DDC-5D8273 salvo no Atlas), /admin lista pedidos, tela de
+  login /admin renderiza no Pages
 
-## Verdade / limites
-- Pages = estatico. Vitrine funciona; checkout/admin/pedidos/rastreio SO funcionam
-  com backend hospedado (Fase 2: Render/Railway + Atlas) + REACT_APP_BACKEND_URL.
-- Agente NAO faz push nem mexe nas Settings do GitHub do usuario (conta dele).
+## Credenciais admin
+- admin@dentedecobra.com / gugu123 (definida no Render como ADMIN_PASSWORD)
 
-## Backlog
-- Fase 2: hospedar backend (Render/Railway) + MongoDB Atlas; setar a variavel de
-  repo REACT_APP_BACKEND_URL; liberar CORS p/ https://xitios660-ctrl.github.io
-- Alternativa mais simples: Deploy nativo Emergent (frontend+backend+DB em 1 URL)
+## Observacoes / limites
+- Render free "dorme" apos ~15min -> 1a requisicao demora ~50s (normal)
+- Pendencias de seguranca do USUARIO: trocar senha GitHub + 2FA, deixar repo privado
+
+## Backlog / futuro
+- Upgrade Render para instancia que nao dorme (opcional)
+- Dominio proprio para a loja
+- Features do backlog: desconto PIX, cupom, codigo de rastreio Correios, filtro de pedidos
