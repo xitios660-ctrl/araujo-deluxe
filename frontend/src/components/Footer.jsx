@@ -1,108 +1,63 @@
-import React from "react";
-import { Instagram, Facebook, MessageCircle, MapPin, Wind } from "lucide-react";
-import { brand, nav } from "../mock";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { InstagramLogo, WhatsappLogo, MapPin, Clock } from "@phosphor-icons/react";
+import { api } from "../lib/api";
 
-export default function Footer() {
+export const Footer = ({ scrollTo }) => {
+  const [wa, setWa] = useState("");
+  useEffect(() => {
+    api.get("/studio-info").then((r) => setWa(r.data.whatsapp)).catch(() => {});
+  }, []);
   return (
-    <footer className="relative z-10 border-t border-white/10 bg-[#0a0714]">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 px-4 py-14 md:grid-cols-4">
-        <div className="md:col-span-2">
-          <div className="flex items-center gap-3">
-            <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-purple-800">
-              <span className="font-display text-lg text-white">DC</span>
-            </span>
-            <div>
-              <p className="font-display text-xl text-white">{brand.name}</p>
-              <p className="text-[10px] font-semibold tracking-[0.32em] text-violet-300">
-                {brand.subtitle}
-              </p>
-            </div>
-          </div>
-          <p className="mt-5 max-w-sm text-sm text-white/60">
-            Linhas indonésia de alta performance para pipeiros exigentes.
-            Blindada, áspera e emborrachada — a linha que corta o céu.
+  <footer id="contato" className="bg-[#221A0E] text-white grain relative" data-testid="footer-section">
+    <div className="max-w-7xl mx-auto px-6 lg:px-10 py-20 relative z-10">
+      <div className="grid md:grid-cols-3 gap-12">
+        <div>
+          <p className="font-display text-3xl">
+            Araújo <span className="italic text-primary">Deluxe</span>
           </p>
-          <div className="mt-6 flex gap-3">
-            <a
-              href={brand.instagramUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white/70 transition-colors hover:border-violet-500/50 hover:text-white"
-            >
-              <Instagram className="h-5 w-5" />
+          <p className="text-white/50 text-sm leading-relaxed mt-4 max-w-xs">
+            Lash design, sobrancelhas e nail design de alto padrão. Agende online e viva a experiência.
+          </p>
+          <div className="flex gap-3 mt-6">
+            <a href="https://instagram.com" target="_blank" rel="noreferrer" className="rounded-full glass-dark p-3 transition-colors duration-300 hover:bg-primary" data-testid="footer-instagram-link">
+              <InstagramLogo size={20} />
             </a>
-            <a
-              href="#"
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white/70 transition-colors hover:border-violet-500/50 hover:text-white"
-            >
-              <Facebook className="h-5 w-5" />
-            </a>
-            <a
-              href={`https://wa.me/${brand.whatsapp}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white/70 transition-colors hover:border-emerald-500/50 hover:text-white"
-            >
-              <MessageCircle className="h-5 w-5" />
+            <a href={`https://wa.me/${wa}`} target="_blank" rel="noreferrer" className="rounded-full glass-dark p-3 transition-colors duration-300 hover:bg-primary" data-testid="footer-whatsapp-link">
+              <WhatsappLogo size={20} />
             </a>
           </div>
         </div>
-
         <div>
-          <p className="font-head text-sm font-600 uppercase tracking-widest text-white">
-            Navegação
+          <p className="uppercase tracking-[0.25em] text-xs text-primary font-semibold mb-5 flex items-center gap-2">
+            <Clock size={14} /> Horários de atendimento
           </p>
-          <ul className="mt-4 flex flex-col gap-2.5">
-            {nav.map((n) => (
-              <li key={n.href}>
-                <a
-                  href={n.href}
-                  className="text-sm text-white/60 transition-colors hover:text-violet-300"
-                >
-                  {n.label}
-                </a>
-              </li>
-            ))}
+          <ul className="text-sm text-white/70 space-y-2.5">
+            <li className="flex justify-between max-w-xs"><span>Segunda a sexta</span><span className="text-white">9h · 11h · 15h30 · 17h</span></li>
+            <li className="flex justify-between max-w-xs"><span>Sábado</span><span className="text-white">9h · 11h · 14h · 16h · 18h</span></li>
+            <li className="flex justify-between max-w-xs"><span>Domingo</span><span className="text-white/40">Fechado</span></li>
           </ul>
+          <button onClick={() => scrollTo("#agendar")} className="mt-6 rounded-full bg-primary text-white text-sm font-semibold px-7 py-3 transition-transform duration-300 hover:scale-105" data-testid="footer-book-button">
+            Agendar agora
+          </button>
         </div>
-
         <div>
-          <p className="font-head text-sm font-600 uppercase tracking-widest text-white">
-            Contato
+          <p className="uppercase tracking-[0.25em] text-xs text-primary font-semibold mb-5 flex items-center gap-2">
+            <MapPin size={14} /> Atendimento
           </p>
-          <ul className="mt-4 flex flex-col gap-3 text-sm text-white/60">
-            <li className="flex items-center gap-2">
-              <MessageCircle className="h-4 w-4 text-emerald-400" />
-              {brand.whatsappDisplay}
-            </li>
-            <li className="flex items-center gap-2">
-              <Instagram className="h-4 w-4 text-fuchsia-400" />@{brand.instagram}
-            </li>
-            <li className="flex items-center gap-2">
-              <MapPin className="h-4 w-4 text-violet-300" />
-              São Paulo • Brasil
-            </li>
-          </ul>
+          <p className="text-sm text-white/70 leading-relaxed">
+            Atendimento com hora marcada.
+            <br /> O sinal de reserva é pago via PIX e o comprovante é enviado pelo próprio site — a confirmação chega na hora pelo WhatsApp.
+          </p>
         </div>
       </div>
-
-      <div className="border-t border-white/5 py-5">
-        <p className="px-4 text-center text-xs text-white/40">
-          © {new Date().getFullYear()} {brand.name} — {brand.subtitle}. Réplica
-          cinematográfica com dados fictícios para demonstração.
-        </p>
+      <div className="border-t border-white/10 mt-16 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <p className="text-white/35 text-xs">© {new Date().getFullYear()} Araújo Deluxe. Todos os direitos reservados.</p>
+        <Link to="/admin" className="text-white/35 text-xs hover:text-primary transition-colors duration-300" data-testid="footer-admin-link">
+          Área do Gestor
+        </Link>
       </div>
-
-      {/* WhatsApp float */}
-      <a
-        href={`https://wa.me/${brand.whatsapp}`}
-        target="_blank"
-        rel="noreferrer"
-        className="animate-pulse-ring fixed bottom-6 right-6 z-[95] flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-green-600 text-white shadow-xl transition-transform hover:scale-110"
-        aria-label="WhatsApp"
-      >
-        <Wind className="h-7 w-7" />
-      </a>
+    </div>
     </footer>
   );
-}
+};

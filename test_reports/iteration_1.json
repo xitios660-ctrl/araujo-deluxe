@@ -1,0 +1,37 @@
+{
+  "summary": "Backend + frontend smoke/integration tests for Araújo Deluxe. 14/14 pytest tests pass (services, business-hours, availability, booking + double-book 409, admin auth by password, admin protected endpoints). Frontend HashRouter loads landing correctly; /#/admin login page renders with data-testid; wrong password shows 'Senha incorreta' toast; correct password '1234' logs in and redirects to /#/admin/dashboard with token stored in localStorage ('ad_token'). Dashboard shows stats and daily agenda with correct slots.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "startup", "issue": "Backend startup tries to auto-spawn WhatsApp bot via subprocess with cwd=/app/whatsapp-bot; when that path doesn't exist it logs a warning (non-fatal). Consider gating behind an env flag."},
+      {"endpoint": "/api/auth/login", "issue": "Brute-force lockout keyed on client IP + admin identifier. In a proxied/preview env (single ingress IP) 5 failed attempts across users would lock the whole IP for 15 minutes; not tested here to avoid locking the environment."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Admin dashboard - Agenda do dia", "issues": ["Uses browser default <input type='date'> picker instead of a shadcn Calendar component - inconsistent with the rest of the styled UI."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(Optional) Replace native date input on admin dashboard with shadcn Calendar/DatePicker for visual consistency.",
+    "(Optional) Guard the WhatsApp bot subprocess spawn in server.py startup behind an env flag (e.g. ENABLE_WA_BOT) since bot is currently disabled placeholder."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 852 lines and mixes auth, bookings, admin, WhatsApp bot, PIX helpers and conversation engine. Should be split into modules (auth.py, bookings.py, admin.py, whatsapp.py, pix.py).",
+    "Lockout uses client IP which is unreliable behind reverse proxy; consider X-Forwarded-For handling or account-based lockout.",
+    "MongoDB _id correctly excluded via projection everywhere returned to clients - good.",
+    "Env vars accessed with os.environ[...] (fail-fast) - good; matches guideline of no default fallbacks.",
+    "get_current_user works with both cookie and Bearer header - good."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (smoke + auth flow)"},
+  "test_credentials": "Admin password: 1234 (from ADMIN_PASSWORD env). No /app/memory/test_credentials.md file present.",
+  "seed_data_creation": "Created 1 TEST_ booking during double-booking test (on a future available slot, service designer-simples, client TEST_Cliente / 11987654321). Left in DB (booking status 'pendente').",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests are pytest at /app/backend/tests/backend_test.py; run with `pytest /app/backend/tests/backend_test.py -v`. Admin login is password-only (POST /api/auth/login {password:'1234'}). Frontend uses HashRouter so admin URL is FRONTEND_URL/#/admin. data-testids present: admin-login-password, admin-login-submit. Brute-force lockout by IP - do not intentionally trigger it or admin will be locked 15 min.",
+  "rca of the issue": "N/A - no failing issue. All targeted flows (catalog, availability, booking creation + 409 double-book, admin password login, protected endpoints, frontend admin login redirect) are working."
+}

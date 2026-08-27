@@ -8,14 +8,22 @@ services:
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: MONGO_URL
-        sync: false          # cole a connection string do MongoDB Atlas
+        sync: false          # connection string do MongoDB Atlas (ja configurada)
       - key: DB_NAME
-        value: dente_de_cobra
+        value: araujo_deluxe
       - key: JWT_SECRET
-        generateValue: true  # o Render gera um segredo forte automaticamente
+        generateValue: true
       - key: ADMIN_EMAIL
-        value: admin@dentedecobra.com
+        value: texeirakelvin74@gmail.com
       - key: ADMIN_PASSWORD
-        sync: false          # defina a NOVA senha do admin no painel do Render
+        sync: false          # senha do painel /admin (ja configurada como gugu123)
       - key: CORS_ORIGINS
         value: https://xitios660-ctrl.github.io
+      - key: PIX_KEY
+        value: texeirakelvin74@gmail.com
+      - key: WHATSAPP_NUMBER
+        value: "5511999999999"
+      - key: OWNER_WHATSAPP
+        value: "5511999999999"
+      - key: WHATSAPP_BOT_URL
+        value: http://localhost:3002
