@@ -22,6 +22,7 @@ import hashlib
 from pymongo import UpdateOne, ReturnDocument
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from difflib import SequenceMatcher
 from bson import ObjectId
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
 from starlette.middleware.cors import CORSMiddleware
@@ -694,6 +695,82 @@ def services_menu_text(category: str) -> str:
     return "\n".join(lines)
 
 
+def wa_main_menu_ui() -> dict:
+    return {
+        "type": "list",
+        "title": "Araújo Deluxe ✨",
+        "text": "Como posso te ajudar?",
+        "button_text": "Abrir menu",
+        "footer": "Você também pode escrever normalmente 💛",
+        "sections": [{
+            "title": "Atendimento",
+            "rows": [
+                {"id": "menu:agendar", "title": "📅 Agendar horário", "description": "Escolher procedimento, data e horário"},
+                {"id": "menu:horarios", "title": "🕐 Ver horários", "description": "Consultar horários disponíveis"},
+                {"id": "menu:comprovante", "title": "📸 Enviar comprovante", "description": "Confirmar o sinal do agendamento"},
+                {"id": "menu:reservas", "title": "📒 Minhas reservas", "description": "Consultar meus agendamentos"},
+            ],
+        }],
+    }
+
+
+def wa_category_ui() -> dict:
+    return {
+        "type": "list",
+        "title": "O que você quer fazer? 💛",
+        "text": "Escolha uma categoria:",
+        "button_text": "Escolher",
+        "footer": "Ou escreva o que você quer fazer.",
+        "sections": [{
+            "title": "Categorias",
+            "rows": [
+                {"id": "cat:cilios", "title": "👁️ Cílios"},
+                {"id": "cat:unhas", "title": "💅 Unhas"},
+                {"id": "cat:sobrancelhas", "title": "✨ Sobrancelhas"},
+            ],
+        }],
+    }
+
+
+def wa_services_ui(category: str) -> dict:
+    rows = []
+    for service in [s for s in SERVICES if s["category"] == category]:
+        rows.append({
+            "id": f"svc:{service['id']}",
+            "title": service["name"][:24],
+            "description": f"R$ {service['price']} · {service['duration']} · sinal R$ {service['deposit']}",
+        })
+    return {
+        "type": "list",
+        "title": CATEGORY_LABELS_WA.get(category, "Serviços"),
+        "text": "Qual serviço você quer?",
+        "button_text": "Ver serviços",
+        "footer": "Toque em uma opção ou escreva o nome.",
+        "sections": [{"title": "Serviços", "rows": rows}],
+    }
+
+
+def wa_slots_ui(date_str: str, slots: List[str]) -> dict:
+    return {
+        "type": "list",
+        "title": f"Horários · {fmt_date_br(date_str)}",
+        "text": "Escolha o melhor horário pra você:",
+        "button_text": "Ver horários",
+        "footer": "Os horários podem mudar se outra pessoa reservar antes.",
+        "sections": [{
+            "title": "Disponíveis",
+            "rows": [{"id": f"slot:{slot}", "title": f"🕐 {slot}"} for slot in slots],
+        }],
+    }
+
+
+def wa_reply(text: str, ui: Optional[dict] = None) -> dict:
+    response = {"reply": text}
+    if ui:
+        response["ui"] = ui
+    return response
+
+
 def parse_br_date(text: str) -> Optional[str]:
     t = text.strip().lower()
     now = datetime.now(TZ)
@@ -758,9 +835,18 @@ def wa_service_from_text(text: str) -> Optional[dict]:
         "banho gel": "banho-gel",
         "blindagem": "blindagem",
     }
-    for alias, service_id in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+    ordered_aliases = sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True)
+    for alias, service_id in ordered_aliases:
         if alias in t:
             return SERVICES_BY_ID.get(service_id)
+
+    # Tolerate common WhatsApp typos such as "brasilero" / "glamur".
+    words = re.findall(r"[a-z0-9]+", t)
+    for alias, service_id in ordered_aliases:
+        alias_words = alias.split()
+        if len(alias_words) == 1:
+            if any(SequenceMatcher(None, word, alias).ratio() >= 0.84 for word in words if len(word) >= 4):
+                return SERVICES_BY_ID.get(service_id)
     return None
 
 
@@ -859,6 +945,162 @@ def wa_memory_name(memory: Optional[dict]) -> Optional[str]:
 
 def wa_memory_service(memory: Optional[dict]) -> Optional[dict]:
     return SERVICES_BY_ID.get((memory or {}).get("last_service_id"))
+
+
+def wa_date_from_sentence(text: str) -> Optional[str]:
+    t = wa_normalize(text)
+    now = datetime.now(TZ)
+    if "depois de amanha" in t:
+        return (now + timedelta(days=2)).strftime("%Y-%m-%d")
+    if "amanha" in t:
+        return (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    if "hoje" in t:
+        return now.strftime("%Y-%m-%d")
+
+    match = re.search(r"\b(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?\b", t)
+    if match:
+        return parse_br_date(match.group(0))
+
+    weekdays = {
+        "segunda": 0, "segunda feira": 0,
+        "terca": 1, "terca feira": 1,
+        "quarta": 2, "quarta feira": 2,
+        "quinta": 3, "quinta feira": 3,
+        "sexta": 4, "sexta feira": 4,
+        "sabado": 5,
+        "domingo": 6,
+    }
+    for label, target in sorted(weekdays.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(label)}\b", t):
+            delta = (target - now.weekday()) % 7
+            if delta == 0:
+                delta = 7
+            return (now + timedelta(days=delta)).strftime("%Y-%m-%d")
+    return None
+
+
+def wa_time_from_sentence(text: str) -> Optional[str]:
+    t = wa_normalize(text)
+    match = re.search(r"\b(\d{1,2})(?::(\d{2})|h(?:(\d{2}))?)\b", t)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2) or match.group(3) or 0)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    return None
+
+
+def wa_recommended_service(text: str) -> Optional[dict]:
+    t = wa_normalize(text)
+    if any(x in t for x in ("delicado", "delicada", "natural", "discreto", "leve")):
+        return SERVICES_BY_ID["brasileiro"]
+    if any(x in t for x in ("gatinho", "raposa", "alongado", "puxado", "fox")):
+        return SERVICES_BY_ID["fox"]
+    if any(x in t for x in ("cheio", "cheiao", "volumoso", "volume alto", "glamour", "chamativo")):
+        return SERVICES_BY_ID["glamour"]
+    if any(x in t for x in ("boneca", "marcante", "egipcio")):
+        return SERVICES_BY_ID["egipcio"]
+    if any(x in t for x in ("equilibrado", "meio termo", "hibrido")):
+        return SERVICES_BY_ID["hibrido"]
+    if any(x in t for x in ("preencher falha", "preencher falhas", "sobrancelha marcada", "henna")):
+        return SERVICES_BY_ID["henna"]
+    if any(x in t for x in ("sobrancelha natural", "so limpar", "limpar sobrancelha", "design simples")):
+        return SERVICES_BY_ID["designer-simples"]
+    if any(x in t for x in ("sobrancelha alinhada", "brow", "lamination", "laminacao")):
+        return SERVICES_BY_ID["brow-lamination"]
+    if any(x in t for x in ("alongamento resistente", "unha longa", "fibra")):
+        return SERVICES_BY_ID["fibra-vidro"]
+    if any(x in t for x in ("molde", "f1")):
+        return SERVICES_BY_ID["molde-f1"]
+    return None
+
+
+async def wa_smart_action(
+    text: str,
+    state: str,
+    sdata: dict,
+    phone: str,
+    memory: Optional[dict],
+    set_state,
+) -> Optional[dict]:
+    t = wa_normalize(text)
+    if not t:
+        return None
+
+    service = wa_service_from_text(text)
+    remembered_service = wa_memory_service(memory)
+    refers_to_previous = any(x in t for x in ("esse", "essa", "esse mesmo", "pode ser", "quero esse", "quero essa"))
+    if not service and refers_to_previous:
+        service = remembered_service
+
+    asks_price = any(x in t for x in ("valor", "preco", "quanto custa", "quanto fica", "quanto e"))
+    asks_duration = any(x in t for x in ("quanto tempo", "demora", "duracao"))
+    if (asks_price or asks_duration) and service:
+        await wa_update_memory_profile(phone, service_id=service["id"])
+        bits = [f"*{service['name']}*"]
+        if asks_price:
+            bits.append(f"fica *R$ {service['price']}* e o sinal é *R$ {service['deposit']}*")
+        if asks_duration:
+            bits.append(f"leva em média *{service['duration']}*")
+        answer = " 💛 ".join(bits) + f". {service['description']}"
+        if state != "menu":
+            answer += "\n\nE eu não perdi seu agendamento, tá? " + wa_step_hint(state)
+        else:
+            answer += "\n\nSe quiser, eu já marco pra você."
+        return wa_reply(answer)
+
+    wants_recommendation = any(x in t for x in (
+        "qual voce recomenda", "qual vc recomenda", "qual indica", "qual voce indica",
+        "qual fica melhor", "qual e melhor", "nao sei qual", "me recomenda", "me indica",
+        "quero algo", "queria algo",
+    ))
+    recommended = wa_recommended_service(text) if wants_recommendation or not service else None
+    if recommended:
+        await wa_update_memory_profile(phone, service_id=recommended["id"])
+        return wa_reply(
+            f"Pelo que você me falou, eu iria de *{recommended['name']}* 💛 "
+            f"{recommended['description']} Fica R$ {recommended['price']} e leva em média {recommended['duration']}. "
+            "Se você gostar, eu já vejo um horário."
+        )
+
+    date_str = wa_date_from_sentence(text)
+    time_str = wa_time_from_sentence(text)
+    wants_booking = any(x in t for x in ("agendar", "marcar", "quero fazer", "quero esse", "quero essa", "pode ser"))
+    asks_availability = any(x in t for x in ("tem horario", "tem vaga", "horario livre", "disponivel", "tem amanha", "tem hoje"))
+
+    if service and date_str and (wants_booking or asks_availability or state == "menu"):
+        available = await wa_available_slots(date_str)
+        if not available:
+            return wa_reply(f"Pra *{fmt_date_br(date_str)}* não tenho horário livre 😔 Me fala outro dia que eu olho.")
+        await wa_update_memory_profile(phone, service_id=service["id"])
+        if time_str:
+            if time_str not in available:
+                return wa_reply(
+                    f"Às *{time_str}* não está livre em {fmt_date_br(date_str)} 😔 "
+                    "Os horários que tenho são: " + ", ".join(available) + ".",
+                    wa_slots_ui(date_str, available),
+                )
+            await set_state("book_name", {"service_id": service["id"], "date": date_str, "time": time_str})
+            return wa_reply(
+                f"Tenho sim 😊 *{service['name']}* em *{fmt_date_br(date_str)} às {time_str}*. "
+                "Me manda seu *nome completo* que eu fecho a reserva."
+            )
+        await set_state("book_time", {"service_id": service["id"], "date": date_str, "slots": available})
+        return wa_reply(
+            f"Tenho horário pra *{service['name']}* em *{fmt_date_br(date_str)}* 💛 Escolhe o melhor:",
+            wa_slots_ui(date_str, available),
+        )
+
+    if service and wants_booking and state == "menu":
+        await wa_update_memory_profile(phone, service_id=service["id"])
+        await set_state("book_date", {"service_id": service["id"]})
+        return wa_reply(f"Perfeito 💛 Vamos marcar *{service['name']}*. Qual dia você prefere? Pode falar tipo *amanhã*, *sexta* ou *20/09*.")
+
+    if state == "menu" and remembered_service and refers_to_previous:
+        await set_state("book_date", {"service_id": remembered_service["id"]})
+        return wa_reply(f"Fechado 💛 Vamos de *{remembered_service['name']}*. Qual dia você quer?")
+
+    return None
 
 
 def wa_step_hint(state: str) -> str:
@@ -1030,6 +1272,28 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
     phone = _digits(data.phone)
     text = (data.text or "").strip()
     lower = text.lower()
+
+    interactive_map = {
+        "menu:agendar": "1",
+        "menu:horarios": "2",
+        "menu:comprovante": "3",
+        "menu:reservas": "4",
+        "cat:cilios": "1",
+        "cat:unhas": "2",
+        "cat:sobrancelhas": "3",
+    }
+    if lower in interactive_map:
+        text = interactive_map[lower]
+        lower = text
+    elif lower.startswith("svc:"):
+        service_id = lower.split(":", 1)[1]
+        service = SERVICES_BY_ID.get(service_id)
+        if service:
+            text = service["name"]
+            lower = text.lower()
+    elif lower.startswith("slot:"):
+        text = lower.split(":", 1)[1]
+        lower = text
     if lower in {"parar", "sair", "stop", "não quero receber mensagens", "nao quero receber mensagens"}:
         await db.wa_preferences.update_one({"_id": phone}, {"$set": {"blocked": True}}, upsert=True)
         return {"reply": None}
@@ -1092,11 +1356,23 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
 
     if lower in RESET_WORDS:
         await set_state("menu")
-        return {"reply": "Claro 💛 Voltamos pro começo. O que você quer fazer? Posso te ajudar com *cílios, unhas, sobrancelhas, valores ou horários*."}
+        return wa_reply(
+            "Claro 💛 Voltamos pro começo. Escolhe uma opção abaixo ou me fala normalmente o que você precisa.",
+            wa_main_menu_ui(),
+        )
+
+    smart_reply = await wa_smart_action(text, state, sdata, phone, memory_for_reply, set_state)
+    if smart_reply:
+        return smart_reply
 
     natural_reply = await wa_natural_reply(text, state, phone, memory_for_reply)
     if natural_reply:
-        return {"reply": natural_reply}
+        greeting = wa_normalize(text)
+        show_menu = state == "menu" and (
+            greeting in {"oi", "ola", "bom dia", "boa tarde", "boa noite", "e ai", "eae", "hey", "hello"}
+            or greeting.startswith(("oi ", "ola ", "bom dia ", "boa tarde ", "boa noite "))
+        )
+        return wa_reply(natural_reply, wa_main_menu_ui() if show_menu else None)
 
     if state == "menu":
         if any(word in lower for word in ("agendar", "marcar", "agendamento")):
@@ -1109,7 +1385,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             lower = "4"
         if lower.startswith("1"):
             await set_state("book_category")
-            return {"reply": CATEGORY_MENU}
+            return wa_reply("Bora marcar 💛 Primeiro escolhe o que você quer fazer:", wa_category_ui())
         if lower.startswith("2"):
             await set_state("avail_date")
             return {"reply": "📅 Qual data você quer consultar?\nDigite no formato *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*."}
@@ -1125,7 +1401,11 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
                 lines.append(f"{emojis.get(b['status'], '•')} {b['service_name']} — {fmt_date_br(b['date'])} às {b['time']} ({b['status']}) · {b['code']}")
             lines.append("\nDigite *menu* para voltar.")
             return {"reply": "\n".join(lines)}
-        return {"reply": "Entendi 💛 Me fala um pouquinho melhor o que você está procurando. Pode ser sobre *cílios, unhas, sobrancelhas, valores, horários* ou agendamento que eu te ajudo por aqui 😊"}
+        return wa_reply(
+            "Posso te ajudar com agendamento, valores, horários e escolher o procedimento ideal 💛 "
+            "Você pode escrever do seu jeito ou usar o menu abaixo.",
+            wa_main_menu_ui(),
+        )
 
     if state == "book_category":
         if "cilio" in lower or "cílio" in lower:
@@ -1137,8 +1417,11 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         if lower.isdigit() and 1 <= int(lower) <= 3:
             cat = CATEGORY_KEYS[int(lower) - 1]
             await set_state("book_service", {"category": cat})
-            return {"reply": services_menu_text(cat)}
-        return {"reply": "Você quer fazer cílios, unhas ou sobrancelhas? Pode escrever o nome ou escolher 1, 2 ou 3. 💛"}
+            return wa_reply(
+                f"Perfeito 💛 Agora escolhe o serviço de *{CATEGORY_LABELS_WA[cat]}*:",
+                wa_services_ui(cat),
+            )
+        return wa_reply("Você quer fazer cílios, unhas ou sobrancelhas? 💛", wa_category_ui())
 
     if state == "book_service":
         cat_services = [s for s in SERVICES if s["category"] == sdata.get("category")]
@@ -1150,7 +1433,10 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             await wa_update_memory_profile(phone, service_id=service["id"])
             await set_state("book_date", {"service_id": service["id"]})
             return {"reply": f"Ótima escolha! *{service['name']}* ✨\n\n📅 Para qual data?\nDigite *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*.\n\n_Atendemos de segunda a sábado._"}
-        return {"reply": "Não entendi. 😅 Responda com o *número* do serviço da lista, ou *0* para voltar ao menu."}
+        return wa_reply(
+            "Não peguei qual serviço você quis 😅 Escolhe na lista ou escreve o nome pra mim.",
+            wa_services_ui(sdata.get("category")) if sdata.get("category") in CATEGORY_KEYS else wa_category_ui(),
+        )
 
     if state in ("book_date", "avail_date"):
         ds = parse_br_date(text)
@@ -1168,12 +1454,10 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         for i, t in enumerate(available, 1):
             lines.append(f"*{i}* — {t}")
         if state == "avail_date":
-            lines.append("\nDigite *1* no menu para agendar, ou *menu* para voltar.")
             await set_state("menu")
-            return {"reply": "\n".join(lines)}
-        lines.append("\nResponda com o *número* do horário desejado.")
+            return wa_reply("\n".join(lines) + "\n\nSe quiser marcar, toca em *Agendar horário*.", wa_main_menu_ui())
         await set_state("book_time", {**sdata, "date": ds, "slots": available})
-        return {"reply": "\n".join(lines)}
+        return wa_reply("\n".join(lines), wa_slots_ui(ds, available))
 
     if state == "book_time":
         slots = sdata.get("slots", [])
@@ -1185,7 +1469,10 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         if lower.isdigit() and 1 <= int(lower) <= len(slots):
             await set_state("book_name", {**sdata, "time": slots[int(lower) - 1]})
             return {"reply": "Perfeito! 🥰 Agora me diga seu *nome completo* para finalizar a reserva."}
-        return {"reply": "Não entendi. 😅 Responda com o *número* do horário da lista, ou *0* para voltar ao menu."}
+        return wa_reply(
+            "Não peguei o horário 😅 Toca em um dos disponíveis abaixo:",
+            wa_slots_ui(sdata.get("date"), slots) if sdata.get("date") and slots else None,
+        )
 
     if state == "book_name":
         if len(text) < 2:

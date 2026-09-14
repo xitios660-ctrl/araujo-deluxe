@@ -172,12 +172,12 @@ function extractText(message) {
     message.imageMessage?.caption ||
     message.videoMessage?.caption ||
     message.documentMessage?.caption ||
-    message.buttonsResponseMessage?.selectedDisplayText ||
     message.buttonsResponseMessage?.selectedButtonId ||
-    message.listResponseMessage?.title ||
+    message.buttonsResponseMessage?.selectedDisplayText ||
     message.listResponseMessage?.singleSelectReply?.selectedRowId ||
-    message.templateButtonReplyMessage?.selectedDisplayText ||
-    message.templateButtonReplyMessage?.selectedId;
+    message.listResponseMessage?.title ||
+    message.templateButtonReplyMessage?.selectedId ||
+    message.templateButtonReplyMessage?.selectedDisplayText;
   if (direct) return String(direct);
 
   const params = message.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson;
@@ -200,6 +200,42 @@ function detectMessageType(message, text) {
   if (message.locationMessage || message.liveLocationMessage) return "location";
   if (message.contactMessage || message.contactsArrayMessage) return "contact";
   return "unknown";
+}
+
+function buildUiPayload(ui, fallbackText) {
+  if (!ui || ui.type !== "list" || !Array.isArray(ui.sections)) return null;
+  const sections = ui.sections
+    .map(section => ({
+      title: String(section.title || "").slice(0, 24),
+      rows: (section.rows || []).slice(0, 10).map(row => ({
+        title: String(row.title || "").slice(0, 24),
+        rowId: String(row.id || ""),
+        description: row.description ? String(row.description).slice(0, 72) : undefined,
+      })).filter(row => row.rowId && row.title),
+    }))
+    .filter(section => section.rows.length);
+  if (!sections.length) return null;
+  return {
+    text: String(ui.text || fallbackText || "Escolha uma opção"),
+    footer: String(ui.footer || "Araújo Deluxe 💛"),
+    title: String(ui.title || "Araújo Deluxe").slice(0, 60),
+    buttonText: String(ui.button_text || "Escolher").slice(0, 20),
+    sections,
+  };
+}
+
+async function sendBotReply(phone, jid, data, reply, dedupeKey) {
+  const uiPayload = buildUiPayload(data.ui, reply);
+  if (uiPayload) {
+    try {
+      await safeSend(phone, jid, uiPayload, dedupeKey);
+      return "interactive";
+    } catch (e) {
+      console.warn("Menu interativo falhou; usando texto:", e.message);
+    }
+  }
+  await safeSend(phone, jid, { text: reply }, dedupeKey);
+  return "text";
 }
 
 async function handleMessage(msg) {
@@ -260,7 +296,7 @@ async function handleMessage(msg) {
           reply = "Oi! Sou a assistente virtual do Araújo Deluxe. 💛\n\n" + reply + "\n\nPara parar mensagens: PARAR. Para voltar: REATIVAR.";
         }
       }
-      await safeSend(phone, jid, { text: reply }, msg.key.id);
+      await sendBotReply(phone, jid, data, reply, msg.key.id);
       await apiRequest("/whatsapp/memory/outgoing", "POST", { phone, text: reply }).catch(() => {});
       if (introduced.size >= 10000) introduced.clear();
       introduced.add(phone);
