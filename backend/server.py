@@ -1118,6 +1118,60 @@ async def wa_smart_action(
     return None
 
 
+def wa_contextual_chat_reply(text: str, state: str, memory: Optional[dict] = None) -> Optional[str]:
+    t = wa_normalize(text)
+    if not t:
+        return None
+
+    recent = wa_recent_user_messages(memory, 4)
+    last_user = recent[-1] if recent else ""
+    last_t = wa_normalize(last_user)
+
+    # Self-deprecating / frustrated messages should be treated as conversation,
+    # never as an invalid booking choice.
+    if any(x in t for x in (
+        "sou burro", "sou burra", "muito burro", "muito burra",
+        "nao entendo nada", "nao sei mexer", "nao consigo", "to perdido", "to perdida",
+        "ta confuso", "esta confuso", "nao entendi",
+    )):
+        hint = wa_step_hint(state)
+        tail = f" Quando quiser continuar, {hint[:1].lower() + hint[1:]}" if hint else ""
+        return (
+            "Que isso kkk 😅 Você não é burro não. Se eu deixei confuso, a culpa é minha. "
+            "Pode falar comigo do seu jeito que eu tento entender." + tail
+        )
+
+    # If the user is roasting the bot, take it lightly and keep the flow.
+    if any(x in t for x in ("voce e burro", "vc e burro", "robo burro", "bot burro")):
+        hint = wa_step_hint(state)
+        tail = f" A gente continua daqui: {hint}" if hint else ""
+        return "Kkkkk aí eu mereci 😭 Se eu não entendi, fala do seu jeito que eu tento de novo." + tail
+
+    if t.startswith("desculpa") or t in {"foi mal", "mal ai", "mals"}:
+        hint = wa_step_hint(state)
+        tail = f" E relaxa, eu ainda lembro onde a gente parou: {hint}" if hint else ""
+        return "Relaxa kkk, não precisa pedir desculpa 💛" + tail
+
+    if any(x in t for x in ("o que voce acha", "oq voce acha", "o que vc acha", "oq vc acha", "que voce acha", "que vc acha")):
+        if any(x in last_t for x in ("burro", "burra", "nao entendo", "confuso", "perdido", "perdida")):
+            return (
+                "Acho que você não é burro nada kkk 😅 Esse atendimento que estava engessado demais. "
+                "Você pode conversar normal comigo e, quando quiser, a gente continua o agendamento."
+            )
+        if last_user:
+            return f"Sobre o que você falou antes, eu entendi sim 💛 Se quiser me dizer exatamente o que quer saber sobre isso, eu respondo sem te jogar de volta pro menu."
+        return "Me fala do que você quer minha opinião que eu te respondo 😊"
+
+    if t in {"sim", "aham", "uhum", "isso", "isso mesmo", "exato"} and state != "menu":
+        hint = wa_step_hint(state)
+        return ("Perfeito 😊 " + hint) if hint else "Perfeito 😊"
+
+    if t in {"nao", "não", "nada", "deixa", "deixa pra la", "deixa pra lá"} and state != "menu":
+        return "Tranquilo 💛 Não vou te prender no agendamento. Quando quiser continuar, é só falar *continuar* ou *menu*."
+
+    return None
+
+
 def wa_step_hint(state: str) -> str:
     hints = {
         "book_category": "Me diz qual você quer: *cílios, unhas ou sobrancelhas* 💛",
@@ -1381,6 +1435,10 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
     if smart_reply:
         return smart_reply
 
+    contextual_reply = wa_contextual_chat_reply(text, state, memory_for_reply)
+    if contextual_reply:
+        return wa_reply(contextual_reply)
+
     natural_reply = await wa_natural_reply(text, state, phone, memory_for_reply)
     if natural_reply:
         greeting = wa_normalize(text)
@@ -1437,7 +1495,11 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
                 f"Perfeito 💛 Agora escolhe o serviço de *{CATEGORY_LABELS_WA[cat]}*:",
                 wa_services_ui(cat),
             )
-        return wa_reply("Você quer fazer cílios, unhas ou sobrancelhas? 💛", wa_category_ui())
+        return wa_reply(
+            "Não consegui ligar essa mensagem a uma categoria 😅 Mas pode conversar comigo normal. "
+            "Quando quiser continuar o agendamento, escolha *1 Cílios, 2 Unhas ou 3 Sobrancelhas*.",
+            wa_category_ui(),
+        )
 
     if state == "book_service":
         cat_services = [s for s in SERVICES if s["category"] == sdata.get("category")]
@@ -1450,7 +1512,8 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             await set_state("book_date", {"service_id": service["id"]})
             return {"reply": f"Ótima escolha! *{service['name']}* ✨\n\n📅 Para qual data?\nDigite *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*.\n\n_Atendemos de segunda a sábado._"}
         return wa_reply(
-            "Não peguei qual serviço você quis 😅 Escolhe na lista ou escreve o nome pra mim.",
+            "Não peguei qual serviço você quis 😅 Se era só conversa, pode falar normal comigo. "
+            "Se quiser continuar, manda o nome ou o número do procedimento.",
             wa_services_ui(sdata.get("category")) if sdata.get("category") in CATEGORY_KEYS else wa_category_ui(),
         )
 
