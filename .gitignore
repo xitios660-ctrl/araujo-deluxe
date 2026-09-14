@@ -85,5 +85,6 @@ android-sdk/
 *.env
 credentials.json
 *.key
+whatsapp-bot/auth_info/
 .credentials
 frontend/node_modules/.cache/default-development/0.pack

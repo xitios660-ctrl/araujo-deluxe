@@ -7,7 +7,7 @@ load_dotenv(ROOT_DIR / '.env')
 import os
 import uuid
 import logging
-import subprocess
+from bot_process import BotProcess
 import bcrypt
 import jwt
 import qrcode
@@ -438,6 +438,7 @@ async def admin_stats(user: dict = Depends(get_current_user)):
 
 # ---------- Payment proof & WhatsApp bot ----------
 BOT_URL = os.environ["WHATSAPP_BOT_URL"]
+bot_process = BotProcess(BOT_URL)
 OWNER_WA = os.environ["OWNER_WHATSAPP"]
 
 
@@ -816,22 +817,6 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def seed_admin():
-    try:
-        async with httpx.AsyncClient(timeout=2) as c:
-            await c.get(f"{BOT_URL}/status")
-    except Exception:
-        try:
-            subprocess.Popen(
-                ["node", "index.js"],
-                cwd="/app/whatsapp-bot",
-                stdout=open("/var/log/whatsapp-bot-spawn.log", "a"),
-                stderr=subprocess.STDOUT,
-                env={**os.environ, "BOT_PORT": "3002", "BACKEND_URL": "http://localhost:8001"},
-                start_new_session=True,
-            )
-            logging.getLogger(__name__).info("WhatsApp bot iniciado pelo backend")
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Falha ao iniciar bot: {e}")
     await db.users.create_index("email", unique=True)
     await db.login_attempts.create_index("identifier")
     await db.bookings.create_index([("date", 1), ("time", 1)])
@@ -844,8 +829,16 @@ async def seed_admin():
     elif not verify_password(admin_password, existing["password_hash"]):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
         logger.info("Admin password updated")
+    # Start after database initialization; callbacks need a ready API.
+    try:
+        async with httpx.AsyncClient(timeout=2) as c:
+            response = await c.get(f"{BOT_URL}/status")
+            response.raise_for_status()
+    except (httpx.HTTPError, ValueError):
+        await bot_process.start()
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    await bot_process.stop()
     client.close()

@@ -3,10 +3,12 @@ services:
     name: dente-de-cobra-api
     runtime: python
     plan: free
-    rootDir: backend
-    buildCommand: pip install -r requirements-deploy.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    rootDir: .
+    buildCommand: bash backend/build.sh
+    startCommand: uvicorn server:app --app-dir backend --host 0.0.0.0 --port $PORT
     envVars:
+      - key: NODE_VERSION
+        value: "22.16.0"
       - key: MONGO_URL
         sync: false          # connection string do MongoDB Atlas (ja configurada)
       - key: DB_NAME
@@ -16,7 +18,7 @@ services:
       - key: ADMIN_EMAIL
         value: texeirakelvin74@gmail.com
       - key: ADMIN_PASSWORD
-        sync: false          # senha do painel /admin (ja configurada como gugu123)
+        sync: false          # Preserve a senha configurada no servidor
       - key: CORS_ORIGINS
         value: https://xitios660-ctrl.github.io
       - key: PIX_KEY

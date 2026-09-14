@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion } = require("baileys");
+let makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion;
 const express = require("express");
 const pino = require("pino");
 const fs = require("fs");
@@ -6,7 +6,7 @@ const path = require("path");
 
 const PORT = process.env.BOT_PORT || 3002;
 const BACKEND = process.env.BACKEND_URL || "http://localhost:8001";
-const AUTH_DIR = path.join(__dirname, "auth_info");
+const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || path.join(__dirname, "auth_info");
 
 let sock = null;
 let lastQR = null;
@@ -176,7 +176,13 @@ app.post("/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, process.env.BOT_HOST || "127.0.0.1", async () => {
   console.log(`WhatsApp bot service na porta ${PORT}`);
-  start();
+  try {
+    ({ default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion } = await import("baileys"));
+    await start();
+  } catch (error) {
+    console.error("Falha ao carregar Baileys:", error.message);
+    process.exit(1);
+  }
 });

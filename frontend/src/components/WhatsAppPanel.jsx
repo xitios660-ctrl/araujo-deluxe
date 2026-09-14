@@ -52,7 +52,7 @@ export const WhatsAppPanel = () => {
           </span>
         ) : (
           <span className="rounded-full bg-amber-100 text-amber-800 text-xs font-semibold px-4 py-2 flex items-center gap-2" data-testid="whatsapp-status-disconnected">
-            <Plugs size={15} /> {status?.offline ? "Serviço iniciando…" : "Desconectado"}
+            <Plugs size={15} /> {status?.offline ? "Serviço indisponível" : "Desconectado"}
           </span>
         )}
       </div>
@@ -83,7 +83,7 @@ export const WhatsAppPanel = () => {
             ) : (
               <div className="text-center text-muted-foreground text-xs">
                 <QrCode size={40} className="mx-auto mb-3 text-primary" />
-                {status?.offline ? "Aguardando o serviço do bot iniciar…" : "Gerando QR Code…"}
+                {status?.offline ? "O bot não está respondendo. A conexão será verificada novamente automaticamente." : "Gerando QR Code…"}
               </div>
             )}
           </div>
