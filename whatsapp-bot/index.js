@@ -202,36 +202,75 @@ function detectMessageType(message, text) {
   return "unknown";
 }
 
-function buildUiPayload(ui, fallbackText) {
+function buildNativeFlow(ui, reply) {
   if (!ui || ui.type !== "list" || !Array.isArray(ui.sections)) return null;
+  if (!baileys?.proto || !baileys?.generateWAMessageFromContent) return null;
+
   const sections = ui.sections
     .map(section => ({
       title: String(section.title || "").slice(0, 24),
       rows: (section.rows || []).slice(0, 10).map(row => ({
+        header: "",
         title: String(row.title || "").slice(0, 24),
-        rowId: String(row.id || ""),
-        description: row.description ? String(row.description).slice(0, 72) : undefined,
-      })).filter(row => row.rowId && row.title),
+        description: row.description ? String(row.description).slice(0, 72) : "",
+        id: String(row.id || ""),
+      })).filter(row => row.id && row.title),
     }))
     .filter(section => section.rows.length);
+
   if (!sections.length) return null;
-  return {
-    text: String(ui.text || fallbackText || "Escolha uma opção"),
-    footer: String(ui.footer || "Araújo Deluxe 💛"),
-    title: String(ui.title || "Araújo Deluxe").slice(0, 60),
-    buttonText: String(ui.button_text || "Escolher").slice(0, 20),
-    sections,
-  };
+
+  return baileys.proto.Message.InteractiveMessage.create({
+    body: baileys.proto.Message.InteractiveMessage.Body.create({
+      text: String(reply || ui.text || "Escolha uma opção"),
+    }),
+    footer: baileys.proto.Message.InteractiveMessage.Footer.create({
+      text: String(ui.footer || "Araújo Deluxe 💛"),
+    }),
+    header: baileys.proto.Message.InteractiveMessage.Header.create({
+      title: String(ui.title || "Araújo Deluxe").slice(0, 60),
+      hasMediaAttachment: false,
+    }),
+    nativeFlowMessage: baileys.proto.Message.InteractiveMessage.NativeFlowMessage.create({
+      buttons: [{
+        name: "single_select",
+        buttonParamsJson: JSON.stringify({
+          title: String(ui.button_text || "Abrir menu").slice(0, 20),
+          sections,
+        }),
+      }],
+      messageVersion: 1,
+    }),
+  });
+}
+
+function safeRelay(phone, jid, message, messageId, dedupeKey = null) {
+  return guard.send(phone, { interactive: true }, () => {
+    if (!connected || !sock || !hasLease || halted) throw new Error("WhatsApp indisponível");
+    return sock.relayMessage(jid, message, { messageId });
+  }, { dedupeKey });
 }
 
 async function sendBotReply(phone, jid, data, reply, dedupeKey) {
-  const uiPayload = buildUiPayload(data.ui, reply);
-  if (uiPayload) {
+  const interactiveMessage = buildNativeFlow(data.ui, reply);
+  if (interactiveMessage) {
     try {
-      await safeSend(phone, jid, uiPayload, dedupeKey);
+      const generated = baileys.generateWAMessageFromContent(jid, {
+        viewOnceMessage: {
+          message: {
+            messageContextInfo: {
+              deviceListMetadataVersion: 2,
+              deviceListMetadata: {},
+            },
+            interactiveMessage,
+          },
+        },
+      }, { userJid: sock?.user?.id });
+
+      await safeRelay(phone, jid, generated.message, generated.key.id, dedupeKey);
       return "interactive";
     } catch (e) {
-      console.warn("Menu interativo falhou; usando texto:", e.message);
+      console.warn("Native Flow falhou; usando texto:", e.message);
     }
   }
   await safeSend(phone, jid, { text: reply }, dedupeKey);

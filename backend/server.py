@@ -1029,6 +1029,21 @@ async def wa_smart_action(
 
     service = wa_service_from_text(text)
     remembered_service = wa_memory_service(memory)
+
+    category = None
+    if re.search(r"\bcilios?\b", t):
+        category = "cilios"
+    elif re.search(r"\bunhas?\b", t):
+        category = "unhas"
+    elif re.search(r"\bsobrancelhas?\b", t):
+        category = "sobrancelhas"
+
+    if state == "menu" and category and not service:
+        await set_state("book_service", {"category": category})
+        return wa_reply(
+            f"Claro 💛 Aqui estão os serviços de *{CATEGORY_LABELS_WA[category]}*. Escolhe o que você quiser:",
+            wa_services_ui(category),
+        )
     refers_to_previous = any(x in t for x in ("esse", "essa", "esse mesmo", "pode ser", "quero esse", "quero essa"))
     if not service and refers_to_previous:
         service = remembered_service
@@ -1354,7 +1369,8 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             )
         }
 
-    if lower in RESET_WORDS:
+    normalized_input = wa_normalize(text)
+    if lower in RESET_WORDS or re.search(r"\bmenu\b", normalized_input):
         await set_state("menu")
         return wa_reply(
             "Claro 💛 Voltamos pro começo. Escolhe uma opção abaixo ou me fala normalmente o que você precisa.",
