@@ -2,7 +2,7 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://xitios660-ctrl.github.io/Dente-de-macaco",
+  "homepage": "https://xitios660-ctrl.github.io/araujo-deluxe",
   "dependencies": {
     "@hookform/resolvers": "5.0.1",
     "@phosphor-icons/react": "^2.1.10",
