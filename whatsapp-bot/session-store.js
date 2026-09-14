@@ -33,16 +33,14 @@ async function usePersistentAuth({ baileys, request, secret, seed }) {
   if (!cache.has("creds")) cache.set("creds", initAuthCreds());
   const creds = cache.get("creds");
   let tail = Promise.resolve();
-  let failed = false;
   function persist(changes) {
     const entries = Object.entries(changes).map(([key, value]) => ({
       key, value: value == null ? null : crypt.encrypt(JSON.stringify(value, BufferJSON.replacer)),
     }));
-    const job = tail.then(async () => {
-      if (failed) throw new Error("Session persistence paused after storage failure");
-      await request("POST", { entries });
-    });
-    tail = job.catch(() => { failed = true; });
+    const job = tail.then(() => request("POST", { entries }));
+    // A transient database failure must reject the current save, but it must not
+    // permanently poison every future credentials update in this process.
+    tail = job.catch(() => {});
     return job;
   }
   // Persist initial credentials/migration before opening a WhatsApp connection.

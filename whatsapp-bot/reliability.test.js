@@ -37,14 +37,40 @@ test("storage error never silently creates a replacement session", async () => {
     request: async () => { throw new Error("database unavailable"); },
   }), /database unavailable/);
 });
-test("replays and duplicate sends are suppressed", async () => {
+test("replays are suppressed by message id while distinct messages may receive the same reply", async () => {
   const g = new MessageGuard({ gapMs: 0 });
   assert.equal(g.accept("a", "1"), true);
   assert.equal(g.accept("a", "1"), false);
   let count = 0;
-  await g.send("a", "same", async () => count++);
-  await g.send("a", "same", async () => count++);
-  assert.equal(count, 1);
+  await g.send("a", "same", async () => count++, { dedupeKey: "incoming-1" });
+  await g.send("a", "same", async () => count++, { dedupeKey: "incoming-1" });
+  await g.send("a", "same", async () => count++, { dedupeKey: "incoming-2" });
+  assert.equal(count, 2);
+});
+test("failed delivery can be retried with the same dedupe key", async () => {
+  const g = new MessageGuard({ gapMs: 0 });
+  let attempts = 0;
+  await assert.rejects(g.send("a", "reply", async () => { attempts++; throw new Error("network"); }, { dedupeKey: "incoming-3" }));
+  await g.send("a", "reply", async () => { attempts++; }, { dedupeKey: "incoming-3" });
+  assert.equal(attempts, 2);
+});
+test("transient storage failure does not poison later credential saves", async () => {
+  const baileys = await import("baileys");
+  const database = new Map();
+  let failNext = false;
+  const request = async (method, body) => {
+    if (method === "GET") return { entries: [...database].map(([key, value]) => ({ key, value })) };
+    if (failNext) { failNext = false; throw new Error("temporary database error"); }
+    for (const entry of body.entries) {
+      if (entry.value === null) database.delete(entry.key); else database.set(entry.key, entry.value);
+    }
+    return { ok: true };
+  };
+  const auth = await usePersistentAuth({ baileys, request, secret: "test-recovery" });
+  failNext = true;
+  await assert.rejects(auth.saveCreds(), /temporary database error/);
+  await auth.saveCreds();
+  assert.equal(database.has("creds"), true);
 });
 test("contact and global limits are enforced", async () => {
   const g = new MessageGuard({ gapMs: 0 });

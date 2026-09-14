@@ -15,7 +15,7 @@ const BACKEND = (process.env.BACKEND_URL || "http://127.0.0.1:8001").replace(/\/
 let baileys, downloadMediaMessage;
 let sock = null, auth = null, lastQR = null, connected = false, starting = false;
 let timer = null, heartbeat = null, attempts = 0, closing = false, hasLease = false;
-let halted = null;
+let halted = null, lastLeaseSuccess = 0, leaseRenewing = null;
 let incomingTail = Promise.resolve(), incomingPending = 0;
 
 async function apiRequest(path, method = "GET", body) {
@@ -53,24 +53,44 @@ function disconnectTransport() {
     previous.end(new Error("Local transport closed; session preserved"));
   }
 }
-async function renewLease() {
-  try {
-    const lease = await apiRequest("/internal/whatsapp/lease", "POST");
-    if (!lease.acquired) throw new Error("Session owned by another instance");
-    hasLease = true;
-  } catch (e) {
-    hasLease = false;
-    disconnectTransport();
-    starting = false;
-    schedule();
-    throw e;
-  }
+async function renewLease({ initial = false } = {}) {
+  if (leaseRenewing) return leaseRenewing;
+  leaseRenewing = (async () => {
+    try {
+      const lease = await apiRequest("/internal/whatsapp/lease", "POST");
+      if (!lease.acquired) {
+        const error = new Error("Session owned by another instance");
+        error.code = "LEASE_TAKEN";
+        throw error;
+      }
+      hasLease = true;
+      lastLeaseSuccess = Date.now();
+      return true;
+    } catch (e) {
+      // Keep the socket alive through one short backend/network hiccup while the
+      // already-acquired 60s lease is still safely within its validity window.
+      const withinGrace = !initial && e.code !== "LEASE_TAKEN" && hasLease &&
+        lastLeaseSuccess && Date.now() - lastLeaseSuccess < 40000;
+      if (withinGrace) {
+        console.warn("Falha temporária ao renovar lease; mantendo conexão:", e.message);
+        return false;
+      }
+      hasLease = false;
+      disconnectTransport();
+      starting = false;
+      schedule();
+      throw e;
+    } finally {
+      leaseRenewing = null;
+    }
+  })();
+  return leaseRenewing;
 }
 async function start() {
   if (starting || connected || closing || halted) return;
   starting = true;
   try {
-    await renewLease();
+    await renewLease({ initial: true });
     auth = await usePersistentAuth({ baileys, request: storageRequest, secret });
     if (closing) return;
     const current = baileys.default({
@@ -82,9 +102,12 @@ async function start() {
     sock = current;
     heartbeat = setInterval(() => { renewLease().catch(() => {}); }, 15000);
     current.ev.on("creds.update", () => {
-      auth.saveCreds().catch(() => {
-        halted = "Falha ao salvar sessão. Verifique o banco antes de reconectar.";
+      auth.saveCreds().catch((e) => {
+        console.error("Falha temporária ao salvar sessão:", e.message);
+        if (current !== sock || closing) return;
         disconnectTransport();
+        starting = false;
+        schedule();
       });
     });
     current.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
@@ -104,8 +127,8 @@ async function start() {
     current.ev.on("messages.upsert", ({ messages, type }) => {
       if (type !== "notify" || closing) return;
       for (const msg of messages) {
-        if (incomingPending >= 20) break;
         incomingPending++;
+        if (incomingPending === 50) console.warn("Fila de atendimento acima de 50 mensagens; processando sem descartar.");
         incomingTail = incomingTail.then(() => handleMessage(msg))
           .catch(e => console.error("Falha no atendimento:", e.message))
           .finally(() => { incomingPending--; });
@@ -118,12 +141,67 @@ async function start() {
     schedule();
   }
 }
-function safeSend(phone, jid, payload) {
+function safeSend(phone, jid, payload, dedupeKey = null) {
   return guard.send(phone, payload, () => {
     if (!connected || !sock || !hasLease || halted) throw new Error("WhatsApp indisponível");
     return sock.sendMessage(jid, payload);
-  });
+  }, { dedupeKey });
 }
+
+function unwrapMessage(message) {
+  let current = message || {};
+  for (let i = 0; i < 8; i++) {
+    const nested =
+      current.ephemeralMessage?.message ||
+      current.viewOnceMessage?.message ||
+      current.viewOnceMessageV2?.message ||
+      current.viewOnceMessageV2Extension?.message ||
+      current.documentWithCaptionMessage?.message ||
+      current.editedMessage?.message ||
+      current.deviceSentMessage?.message;
+    if (!nested) break;
+    current = nested;
+  }
+  return current;
+}
+
+function extractText(message) {
+  const direct =
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
+    message.buttonsResponseMessage?.selectedDisplayText ||
+    message.buttonsResponseMessage?.selectedButtonId ||
+    message.listResponseMessage?.title ||
+    message.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    message.templateButtonReplyMessage?.selectedDisplayText ||
+    message.templateButtonReplyMessage?.selectedId;
+  if (direct) return String(direct);
+
+  const params = message.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson;
+  if (params) {
+    try {
+      const parsed = JSON.parse(params);
+      return String(parsed.title || parsed.id || parsed.selectedId || parsed.selectedRowId || parsed.value || "");
+    } catch (_) {}
+  }
+  return "";
+}
+
+function detectMessageType(message, text) {
+  if (text) return "text";
+  if (message.audioMessage) return "audio";
+  if (message.stickerMessage) return "sticker";
+  if (message.imageMessage) return "image";
+  if (message.videoMessage) return "video";
+  if (message.documentMessage) return "document";
+  if (message.locationMessage || message.liveLocationMessage) return "location";
+  if (message.contactMessage || message.contactsArrayMessage) return "contact";
+  return "unknown";
+}
+
 async function handleMessage(msg) {
   if (!msg.message || msg.key.fromMe) return;
   const jid = msg.key.remoteJid || "";
@@ -135,13 +213,9 @@ async function handleMessage(msg) {
   const phoneSource = jid.endsWith("@lid") && alt ? alt : jid;
   const phone = String(phoneSource).split("@")[0].split(":")[0];
 
-  const m =
-    msg.message.ephemeralMessage?.message ||
-    msg.message.viewOnceMessage?.message ||
-    msg.message.viewOnceMessageV2?.message ||
-    msg.message.documentWithCaptionMessage?.message ||
-    msg.message;
-  const text = m.conversation || m.extendedTextMessage?.text || m.imageMessage?.caption || m.documentMessage?.caption || "";
+  const m = unwrapMessage(msg.message);
+  const text = extractText(m);
+  const messageType = detectMessageType(m, text);
 
   const command = text.trim().toLowerCase();
   if (["parar", "sair", "stop", "não quero receber mensagens", "nao quero receber mensagens"].includes(command)) guard.blocked.add(phone);
@@ -169,10 +243,15 @@ async function handleMessage(msg) {
     const data = await apiRequest("/whatsapp/incoming", "POST", { phone, text, image_base64, image_mime });
     if (data.reply) {
       let reply = data.reply;
+      if (!text && !image_base64 && messageType === "audio") {
+        reply = "Recebi seu áudio 💛 Por enquanto eu não consigo ouvir áudios. Me manda por texto que eu te respondo na hora.";
+      } else if (!text && !image_base64 && messageType !== "text") {
+        reply = "Recebi sua mensagem 💛 Para eu entender certinho, me manda em texto que eu continuo seu atendimento daqui.";
+      }
       if (!introduced.has(phone) && !reply.includes("assistente virtual")) {
         reply = "Oi! Sou a assistente virtual do Araújo Deluxe. 💛\n\n" + reply + "\n\nPara parar mensagens: PARAR. Para voltar: REATIVAR.";
       }
-      await safeSend(phone, jid, { text: reply });
+      await safeSend(phone, jid, { text: reply }, msg.key.id);
       if (introduced.size >= 10000) introduced.clear();
       introduced.add(phone);
     }
