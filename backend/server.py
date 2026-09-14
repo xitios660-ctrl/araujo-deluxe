@@ -526,6 +526,12 @@ class WAIncoming(BaseModel):
     text: Optional[str] = ""
     image_base64: Optional[str] = None
     image_mime: Optional[str] = None
+    push_name: Optional[str] = None
+
+
+class WAOutgoingMemory(BaseModel):
+    phone: str
+    text: str
 
 
 def fmt_date_br(date_str: str) -> str:
@@ -758,6 +764,103 @@ def wa_service_from_text(text: str) -> Optional[dict]:
     return None
 
 
+def wa_clean_name(value: Optional[str]) -> Optional[str]:
+    value = re.sub(r"\s+", " ", (value or "").strip())[:80]
+    if len(value) < 2 or not any(ch.isalpha() for ch in value):
+        return None
+    return value
+
+
+def wa_name_from_text(text: str) -> Optional[str]:
+    raw = (text or "").strip()
+    match = re.search(
+        r"\b(?:meu nome (?:e|é)|me chamo)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{1,50})",
+        raw,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    candidate = re.split(r"[,.;!?]|\s+(?:e|mas|porque|pq|quero|queria|gostaria)\s+", match.group(1), maxsplit=1, flags=re.IGNORECASE)[0]
+    words = candidate.strip().split()
+    return wa_clean_name(" ".join(words[:4]))
+
+
+async def wa_get_memory(phone: str) -> Optional[dict]:
+    return await db.wa_memories.find_one({"_id": _digits(phone)}, {"_id": 0})
+
+
+async def wa_update_memory_profile(phone: str, name: Optional[str] = None, service_id: Optional[str] = None):
+    updates = {"last_seen": datetime.now(timezone.utc).isoformat()}
+    clean_name = wa_clean_name(name)
+    if clean_name:
+        updates["name"] = clean_name
+    if service_id in SERVICES_BY_ID:
+        updates["last_service_id"] = service_id
+    await db.wa_memories.update_one(
+        {"_id": _digits(phone)},
+        {"$set": updates, "$setOnInsert": {"first_seen": updates["last_seen"], "message_count": 0}},
+        upsert=True,
+    )
+
+
+async def wa_remember_message(
+    phone: str,
+    role: str,
+    text: str,
+    push_name: Optional[str] = None,
+    service_id: Optional[str] = None,
+    booking_name: Optional[str] = None,
+):
+    phone = _digits(phone)
+    now = datetime.now(timezone.utc).isoformat()
+    remembered_text = (text or "").strip()[:1200]
+    entry = {"role": role, "text": remembered_text, "at": now}
+    set_values = {"last_seen": now}
+    if role == "user":
+        set_values["last_incoming_text"] = remembered_text
+    else:
+        set_values["last_outgoing_text"] = remembered_text
+
+    remembered_name = wa_clean_name(booking_name) or wa_clean_name(push_name)
+    if remembered_name:
+        set_values["name"] = remembered_name
+    if service_id in SERVICES_BY_ID:
+        set_values["last_service_id"] = service_id
+
+    await db.wa_memories.update_one(
+        {"_id": phone},
+        {
+            "$set": set_values,
+            "$setOnInsert": {"first_seen": now},
+            "$inc": {"message_count": 1},
+            "$push": {"history": {"$each": [entry], "$slice": -80}},
+        },
+        upsert=True,
+    )
+
+
+def wa_recent_user_messages(memory: Optional[dict], limit: int = 3) -> List[str]:
+    history = (memory or {}).get("history") or []
+    values = []
+    for item in reversed(history):
+        if item.get("role") != "user":
+            continue
+        value = (item.get("text") or "").strip()
+        if value and not value.startswith("["):
+            values.append(value[:140])
+        if len(values) >= limit:
+            break
+    return list(reversed(values))
+
+
+def wa_memory_name(memory: Optional[dict]) -> Optional[str]:
+    return wa_clean_name((memory or {}).get("name"))
+
+
+def wa_memory_service(memory: Optional[dict]) -> Optional[dict]:
+    return SERVICES_BY_ID.get((memory or {}).get("last_service_id"))
+
+
 def wa_step_hint(state: str) -> str:
     hints = {
         "book_category": "Me diz qual você quer: *cílios, unhas ou sobrancelhas* 💛",
@@ -770,14 +873,53 @@ def wa_step_hint(state: str) -> str:
     return hints.get(state, "")
 
 
-async def wa_natural_reply(text: str, state: str = "menu") -> Optional[str]:
+async def wa_natural_reply(text: str, state: str = "menu", phone: str = "", memory: Optional[dict] = None) -> Optional[str]:
     t = wa_normalize(text)
     if not t:
         return None
 
+    remembered_name = wa_memory_name(memory)
+    remembered_service = wa_memory_service(memory)
+    name_mentioned = wa_name_from_text(text)
+
+    if name_mentioned:
+        return f"Prazer, *{name_mentioned}* 💛 Vou lembrar do seu nome nas próximas conversas por aqui."
+
+    if any(x in t for x in ("lembra de mim", "voce lembra de mim", "vc lembra de mim", "ja falei com voce", "ja conversei com voce", "o que a gente conversou", "o que eu perguntei antes")):
+        bookings = (await wa_find_bookings(phone))[:1] if phone else []
+        recent = wa_recent_user_messages(memory, 3)
+        pieces = []
+        if remembered_name:
+            pieces.append(f"lembro de você como *{remembered_name}*")
+        if remembered_service:
+            pieces.append(f"você já perguntou/olhou *{remembered_service['name']}*")
+        if bookings:
+            last = bookings[0]
+            pieces.append(f"seu agendamento mais recente foi *{last['service_name']}* em {fmt_date_br(last['date'])} às {last['time']}")
+        if pieces:
+            answer = "Lembro sim 😊💛 " + ", e ".join(pieces) + "."
+            if recent:
+                answer += "\n\nNas últimas mensagens você falou: " + " | ".join(f"“{item}”" for item in recent[-2:])
+            return answer
+        return "Ainda não tenho uma conversa antiga sua salva o suficiente pra lembrar 😅 Mas a partir de agora eu vou guardando nosso histórico por aqui 💛"
+
+    if any(x in t for x in ("continua de onde paramos", "continuar de onde paramos", "onde paramos", "retoma de onde paramos", "vamos continuar")):
+        if state != "menu":
+            return "Claro 💛 Eu lembro onde a gente parou. " + wa_step_hint(state)
+        if remembered_service:
+            return f"Claro 💛 A última coisa que ficou marcada na minha memória foi *{remembered_service['name']}*. Quer continuar por ele?"
+        recent = wa_recent_user_messages(memory, 1)
+        if recent:
+            return f"Claro 💛 A última coisa que você me falou foi: “{recent[-1]}”. Me diz se quer continuar daí."
+        return "Claro 💛 Me dá só uma pista do assunto e eu retomo com você daqui."
+
     greetings = ("oi", "ola", "bom dia", "boa tarde", "boa noite", "e ai", "eae", "hey", "hello")
     if t in greetings or any(t.startswith(g + " ") for g in greetings):
         if state == "menu":
+            if memory and memory.get("message_count", 0) > 0:
+                hello_name = f", {remembered_name.split()[0]}" if remembered_name else ""
+                tail = f" Da última vez a gente estava falando de *{remembered_service['name']}*." if remembered_service else ""
+                return f"Oii{hello_name} 💛 Que bom falar com você de novo!{tail} O que você precisa hoje?"
             return "Oii 💛 Tudo bem? Me conta o que você está querendo fazer. Trabalho com cílios, unhas e sobrancelhas. Se quiser, já vejo valores ou horários pra você."
         return "Oii 💛 Tô por aqui sim! " + wa_step_hint(state)
 
@@ -898,6 +1040,27 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         return {"reply": None}
     await db.wa_preferences.update_one({"_id": phone}, {"$set": {"last_incoming": datetime.now(timezone.utc).isoformat()}}, upsert=True)
 
+    memory = await wa_get_memory(phone)
+    detected_service = wa_service_from_text(text)
+    explicit_name = wa_name_from_text(text)
+    remembered_input = text or ("[imagem/comprovante]" if data.image_base64 else "[mensagem sem texto]")
+    await wa_remember_message(
+        phone,
+        "user",
+        remembered_input,
+        push_name=data.push_name,
+        service_id=detected_service["id"] if detected_service else None,
+        booking_name=explicit_name,
+    )
+    # Use the memory as it existed before this message to distinguish a returning client.
+    memory_for_reply = dict(memory or {})
+    if explicit_name:
+        memory_for_reply["name"] = explicit_name
+    elif data.push_name and not memory_for_reply.get("name"):
+        memory_for_reply["name"] = wa_clean_name(data.push_name)
+    if detected_service:
+        memory_for_reply["last_service_id"] = detected_service["id"]
+
     session = await db.wa_sessions.find_one({"phone": phone}, {"_id": 0})
     state = session.get("state", "menu") if session else "menu"
     sdata = session.get("data", {}) if session else {}
@@ -931,7 +1094,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         await set_state("menu")
         return {"reply": "Claro 💛 Voltamos pro começo. O que você quer fazer? Posso te ajudar com *cílios, unhas, sobrancelhas, valores ou horários*."}
 
-    natural_reply = await wa_natural_reply(text, state)
+    natural_reply = await wa_natural_reply(text, state, phone, memory_for_reply)
     if natural_reply:
         return {"reply": natural_reply}
 
@@ -984,6 +1147,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             lower = str(named[0])
         if lower.isdigit() and 1 <= int(lower) <= len(cat_services):
             service = cat_services[int(lower) - 1]
+            await wa_update_memory_profile(phone, service_id=service["id"])
             await set_state("book_date", {"service_id": service["id"]})
             return {"reply": f"Ótima escolha! *{service['name']}* ✨\n\n📅 Para qual data?\nDigite *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*.\n\n_Atendemos de segunda a sábado._"}
         return {"reply": "Não entendi. 😅 Responda com o *número* do serviço da lista, ou *0* para voltar ao menu."}
@@ -1027,6 +1191,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         if len(text) < 2:
             return {"reply": "Digite seu *nome completo*, por favor. 😊"}
         try:
+            await wa_update_memory_profile(phone, name=text, service_id=sdata.get("service_id"))
             booking = await wa_create_booking(sdata["service_id"], sdata["date"], sdata["time"], text, phone)
         except ValueError:
             await set_state("book_date", {"service_id": sdata.get("service_id")})
@@ -1052,6 +1217,26 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
     return {"reply": MENU_TEXT}
 
 
+@api_router.post("/whatsapp/memory/outgoing")
+async def whatsapp_memory_outgoing(data: WAOutgoingMemory, auth=Depends(require_bot_lease)):
+    phone = _digits(data.phone)
+    if phone and data.text.strip():
+        await wa_remember_message(phone, "assistant", data.text)
+    return {"ok": True}
+
+
+@api_router.get("/whatsapp/memory/status/{phone}")
+async def whatsapp_memory_status(phone: str, auth=Depends(require_bot_lease)):
+    memory = await wa_get_memory(phone)
+    return {
+        "known": bool(memory),
+        "returning": bool(memory and memory.get("message_count", 0) > 1),
+        "name": wa_memory_name(memory),
+        "last_service_id": (memory or {}).get("last_service_id"),
+        "message_count": (memory or {}).get("message_count", 0),
+    }
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -1071,6 +1256,7 @@ async def seed_admin():
     await db.users.create_index("email", unique=True)
     await db.login_attempts.create_index("identifier")
     await db.bookings.create_index([("date", 1), ("time", 1)])
+    await db.wa_memories.create_index("last_seen")
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
     existing = await db.users.find_one({"email": admin_email})
