@@ -202,79 +202,60 @@ function detectMessageType(message, text) {
   return "unknown";
 }
 
-function buildNativeFlow(ui, reply) {
+function buildListPayload(ui, reply) {
   if (!ui || ui.type !== "list" || !Array.isArray(ui.sections)) return null;
-  if (!baileys?.proto || !baileys?.generateWAMessageFromContent) return null;
-
   const sections = ui.sections
     .map(section => ({
       title: String(section.title || "").slice(0, 24),
       rows: (section.rows || []).slice(0, 10).map(row => ({
-        header: "",
         title: String(row.title || "").slice(0, 24),
-        description: row.description ? String(row.description).slice(0, 72) : "",
-        id: String(row.id || ""),
-      })).filter(row => row.id && row.title),
+        rowId: String(row.id || ""),
+        description: row.description ? String(row.description).slice(0, 72) : undefined,
+      })).filter(row => row.rowId && row.title),
     }))
     .filter(section => section.rows.length);
-
   if (!sections.length) return null;
-
-  return baileys.proto.Message.InteractiveMessage.create({
-    body: baileys.proto.Message.InteractiveMessage.Body.create({
-      text: String(reply || ui.text || "Escolha uma opção"),
-    }),
-    footer: baileys.proto.Message.InteractiveMessage.Footer.create({
-      text: String(ui.footer || "Araújo Deluxe 💛"),
-    }),
-    header: baileys.proto.Message.InteractiveMessage.Header.create({
-      title: String(ui.title || "Araújo Deluxe").slice(0, 60),
-      hasMediaAttachment: false,
-    }),
-    nativeFlowMessage: baileys.proto.Message.InteractiveMessage.NativeFlowMessage.create({
-      buttons: [{
-        name: "single_select",
-        buttonParamsJson: JSON.stringify({
-          title: String(ui.button_text || "Abrir menu").slice(0, 20),
-          sections,
-        }),
-      }],
-      messageVersion: 1,
-    }),
-  });
+  return {
+    title: String(ui.title || "Araújo Deluxe").slice(0, 60),
+    text: String(ui.text || "Escolha uma opção"),
+    footer: String(ui.footer || "Araújo Deluxe 💛"),
+    buttonText: String(ui.button_text || "Abrir menu").slice(0, 20),
+    sections,
+  };
 }
 
-function safeRelay(phone, jid, message, messageId, dedupeKey = null) {
-  return guard.send(phone, { interactive: true }, () => {
-    if (!connected || !sock || !hasLease || halted) throw new Error("WhatsApp indisponível");
-    return sock.relayMessage(jid, message, { messageId });
-  }, { dedupeKey });
+function uiTextFallback(ui, reply) {
+  if (!ui || !Array.isArray(ui.sections)) return String(reply || "");
+  const rows = ui.sections.flatMap(section => section.rows || []);
+  if (!rows.length) return String(reply || "");
+  const options = rows.map((row, i) => {
+    const desc = row.description ? " — " + row.description : "";
+    return "*" + (i + 1) + ".* " + String(row.title || "Opção") + desc;
+  });
+  return [String(reply || ui.text || "Escolha uma opção"), "", ...options, "", "_Você pode tocar no menu abaixo ou responder com o número._"].join("\n");
 }
 
 async function sendBotReply(phone, jid, data, reply, dedupeKey) {
-  const interactiveMessage = buildNativeFlow(data.ui, reply);
-  if (interactiveMessage) {
-    try {
-      const generated = baileys.generateWAMessageFromContent(jid, {
-        viewOnceMessage: {
-          message: {
-            messageContextInfo: {
-              deviceListMetadataVersion: 2,
-              deviceListMetadata: {},
-            },
-            interactiveMessage,
-          },
-        },
-      }, { userJid: sock?.user?.id });
+  const listPayload = buildListPayload(data.ui, reply);
 
-      await safeRelay(phone, jid, generated.message, generated.key.id, dedupeKey);
-      return "interactive";
-    } catch (e) {
-      console.warn("Native Flow falhou; usando texto:", e.message);
-    }
+  if (!listPayload) {
+    await safeSend(phone, jid, { text: reply }, dedupeKey);
+    return "text";
   }
-  await safeSend(phone, jid, { text: reply }, dedupeKey);
-  return "text";
+
+  // Always send a visible text fallback first. Some WhatsApp clients silently
+  // discard interactive payloads even when Baileys reports a successful relay.
+  const fallback = uiTextFallback(data.ui, reply);
+  await safeSend(phone, jid, { text: fallback }, dedupeKey + ":text");
+
+  try {
+    await safeSend(phone, jid, listPayload, dedupeKey + ":list");
+    console.log("Menu interativo enviado para", jid);
+    return "text+list";
+  } catch (e) {
+    console.warn("Lista interativa falhou; texto já foi entregue:", e.message);
+    return "text-fallback";
+  }
 }
 
 async function handleMessage(msg) {
