@@ -66,7 +66,7 @@ class DialogueRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unhas_still_continues_booking_after_chat(self):
         result, fake = await self.call("Unhas")
-        self.assertIn("serviços de", result["reply"].lower())
+        self.assertIn("serviço de", result["reply"].lower())
         self.assertEqual(result["ui"]["type"], "list")
         self.assertTrue(any("fibra" in row["title"].lower() for row in result["ui"]["sections"][0]["rows"]))
         fake.wa_sessions.update_one.assert_awaited()
