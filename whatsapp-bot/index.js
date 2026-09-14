@@ -240,7 +240,13 @@ async function handleMessage(msg) {
   const showTyping = !guard.blocked.has(phone);
   if (showTyping) await current.sendPresenceUpdate("composing", jid).catch(() => {});
   try {
-    const data = await apiRequest("/whatsapp/incoming", "POST", { phone, text, image_base64, image_mime });
+    const data = await apiRequest("/whatsapp/incoming", "POST", {
+      phone,
+      text,
+      image_base64,
+      image_mime,
+      push_name: msg.pushName || null,
+    });
     if (data.reply) {
       let reply = data.reply;
       if (!text && !image_base64 && messageType === "audio") {
@@ -248,10 +254,14 @@ async function handleMessage(msg) {
       } else if (!text && !image_base64 && messageType !== "text") {
         reply = "Recebi sua mensagem 💛 Para eu entender certinho, me manda em texto que eu continuo seu atendimento daqui.";
       }
-      if (!introduced.has(phone) && !reply.includes("assistente virtual")) {
-        reply = "Oi! Sou a assistente virtual do Araújo Deluxe. 💛\n\n" + reply + "\n\nPara parar mensagens: PARAR. Para voltar: REATIVAR.";
+      if (!introduced.has(phone)) {
+        const memoryStatus = await apiRequest("/whatsapp/memory/status/" + encodeURIComponent(phone)).catch(() => null);
+        if (!memoryStatus?.returning && !reply.includes("assistente virtual")) {
+          reply = "Oi! Sou a assistente virtual do Araújo Deluxe. 💛\n\n" + reply + "\n\nPara parar mensagens: PARAR. Para voltar: REATIVAR.";
+        }
       }
       await safeSend(phone, jid, { text: reply }, msg.key.id);
+      await apiRequest("/whatsapp/memory/outgoing", "POST", { phone, text: reply }).catch(() => {});
       if (introduced.size >= 10000) introduced.clear();
       introduced.add(phone);
     }
@@ -287,6 +297,7 @@ app.post("/send", async (req, res) => {
     const { digits, jid } = jidFor(req.body.phone);
     if (typeof req.body.message !== "string" || !req.body.message.trim()) throw new Error("Mensagem vazia");
     await safeSend(digits, jid, { text: req.body.message });
+    await apiRequest("/whatsapp/memory/outgoing", "POST", { phone: digits, text: req.body.message }).catch(() => {});
     res.json({ ok: true });
   } catch (e) { res.status(503).json({ ok: false, error: e.message }); }
 });
@@ -300,6 +311,7 @@ app.post("/send-image", async (req, res) => {
       ? { document: buffer, mimetype, fileName: "comprovante.pdf", caption }
       : { image: buffer, caption };
     await safeSend(digits, jid, payload);
+    if (caption) await apiRequest("/whatsapp/memory/outgoing", "POST", { phone: digits, text: caption }).catch(() => {});
     res.json({ ok: true });
   } catch (e) { res.status(503).json({ ok: false, error: e.message }); }
 });
