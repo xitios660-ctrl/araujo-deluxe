@@ -15,6 +15,7 @@ import io
 import re
 import base64
 import httpx
+import unicodedata
 import asyncio
 import hmac
 import hashlib
@@ -663,7 +664,7 @@ MENU_TEXT = (
     "Para interromper mensagens: PARAR. Para retomar: REATIVAR."
 )
 
-RESET_WORDS = {"menu", "0", "voltar", "inicio", "início", "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "cancelar", "sair"}
+RESET_WORDS = {"menu", "0", "voltar", "inicio", "início", "cancelar", "sair"}
 
 
 CATEGORY_KEYS = ["cilios", "unhas", "sobrancelhas"]
@@ -712,6 +713,132 @@ def parse_br_date(text: str) -> Optional[str]:
         except ValueError:
             return None
     return ds
+
+
+def wa_normalize(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", (text or "").lower())
+    return " ".join("".join(ch for ch in normalized if not unicodedata.combining(ch)).split())
+
+
+def wa_service_from_text(text: str) -> Optional[dict]:
+    t = wa_normalize(text)
+    aliases = {
+        "brasileiro": "brasileiro",
+        "volume brasileiro": "brasileiro",
+        "fox": "fox",
+        "fox eyes": "fox",
+        "glamour": "glamour",
+        "volume glamour": "glamour",
+        "egipcio": "egipcio",
+        "volume egipcio": "egipcio",
+        "hibrido": "hibrido",
+        "volume hibrido": "hibrido",
+        "manutencao 15": "manutencao-15",
+        "manutencao de 15": "manutencao-15",
+        "manutencao 25": "manutencao-25",
+        "manutencao de 25": "manutencao-25",
+        "henna": "henna",
+        "brow lamination": "brow-lamination",
+        "laminacao": "brow-lamination",
+        "design simples": "designer-simples",
+        "designer simples": "designer-simples",
+        "fibra de vidro": "fibra-vidro",
+        "fibra": "fibra-vidro",
+        "molde f1": "molde-f1",
+        "f1": "molde-f1",
+        "esmaltacao em gel": "esmaltacao-gel",
+        "esmaltacao gel": "esmaltacao-gel",
+        "banho em gel": "banho-gel",
+        "banho gel": "banho-gel",
+        "blindagem": "blindagem",
+    }
+    for alias, service_id in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias in t:
+            return SERVICES_BY_ID.get(service_id)
+    return None
+
+
+def wa_step_hint(state: str) -> str:
+    hints = {
+        "book_category": "Me diz qual você quer: *cílios, unhas ou sobrancelhas* 💛",
+        "book_service": "Pode me mandar o *nome ou número do serviço* que você quer.",
+        "book_date": "Agora só preciso da *data*. Pode mandar DD/MM, *hoje* ou *amanhã*.",
+        "avail_date": "Qual data você quer consultar? Pode mandar DD/MM, *hoje* ou *amanhã*.",
+        "book_time": "Escolhe um dos *horários* que eu te mostrei e me manda o número ou o horário.",
+        "book_name": "Pra finalizar, me manda seu *nome completo* 😊",
+    }
+    return hints.get(state, "")
+
+
+async def wa_natural_reply(text: str, state: str = "menu") -> Optional[str]:
+    t = wa_normalize(text)
+    if not t:
+        return None
+
+    greetings = ("oi", "ola", "bom dia", "boa tarde", "boa noite", "e ai", "eae", "hey", "hello")
+    if t in greetings or any(t.startswith(g + " ") for g in greetings):
+        if state == "menu":
+            return "Oii 💛 Tudo bem? Me conta o que você está querendo fazer. Trabalho com cílios, unhas e sobrancelhas. Se quiser, já vejo valores ou horários pra você."
+        return "Oii 💛 Tô por aqui sim! " + wa_step_hint(state)
+
+    if any(x in t for x in ("tudo bem", "como voce ta", "como vc ta", "ta bem")):
+        extra = (" " + wa_step_hint(state)) if state != "menu" else " E você? Se quiser, já me fala o que está procurando que eu te ajudo 😊"
+        return "Tudo certinho por aqui 💛" + extra
+
+    if t in {"obrigada", "obrigado", "obg", "vlw", "valeu", "brigada", "brigado"} or "muito obrigada" in t or "muito obrigado" in t:
+        extra = (" " + wa_step_hint(state)) if state != "menu" else " Quando quiser marcar, é só me chamar por aqui 💛"
+        return "Imaginaaa 😊💛" + extra
+
+    if t in {"kkk", "kkkk", "kkkkk", "rs", "rsrs", "haha", "hahaha"}:
+        extra = (" " + wa_step_hint(state)) if state != "menu" else " Me fala o que você quer fazer que eu te ajudo por aqui 😄"
+        return "Kkkkk 😄" + extra
+
+    if state != "menu":
+        return None
+
+    service = wa_service_from_text(text)
+    asks_price = any(x in t for x in ("valor", "preco", "quanto custa", "quanto fica", "quanto e"))
+    asks_duration = any(x in t for x in ("quanto tempo", "demora", "duracao"))
+    if service and (asks_price or asks_duration or service["id"] in t or wa_normalize(service["name"]) in t):
+        return (
+            f"Faço sim 💛 *{service['name']}* fica *R$ {service['price']}*. "
+            f"O sinal é *R$ {service['deposit']}* e leva em média *{service['duration']}*. "
+            f"{service['description']}\n\n"
+            "Se quiser, eu já vejo um horário pra você 😊"
+        )
+
+    if asks_price:
+        return (
+            "Claro 💛 Os valores dependem do procedimento. "
+            "Me fala qual você quer saber, por exemplo *Volume Brasileiro, Glamour, Henna, Fibra de Vidro* ou outro, que eu te passo valor, sinal e duração certinho."
+        )
+
+    if any(x in t for x in ("faz cilios", "trabalha com cilios", "tem cilios")):
+        return "Faço sim 😊💛 Tenho Volume Brasileiro, Fox Eyes, Glamour, Egípcio, Híbrido e manutenção. Se me disser qual efeito você gosta, eu te passo os valores."
+    if any(x in t for x in ("faz unha", "trabalha com unha", "tem unha")):
+        return "Faço sim 💅💛 Tem Fibra de Vidro, Molde F1, Esmaltação em Gel, Banho em Gel e Blindagem. Quer que eu te passe os valores?"
+    if any(x in t for x in ("faz sobrancelha", "trabalha com sobrancelha", "tem sobrancelha")):
+        return "Faço sim ✨💛 Tem Design com Henna, Brow Lamination e Design Simples. Me fala qual te interessa que eu te passo tudo certinho."
+
+    asks_availability = any(x in t for x in ("tem horario", "tem vaga", "horario livre", "disponivel"))
+    if asks_availability and ("amanha" in t or "hoje" in t):
+        ds = parse_br_date("amanhã" if "amanha" in t else "hoje")
+        if ds:
+            available = await wa_available_slots(ds)
+            if available:
+                return f"Tenho sim 💛 Para *{fmt_date_br(ds)}* estão livres: " + ", ".join(available) + ". Quer marcar algum desses?"
+            return f"Pra *{fmt_date_br(ds)}* não apareceu nenhum horário livre 😔 Se quiser, me fala outra data que eu olho pra você."
+
+    if asks_availability:
+        return "Consigo olhar pra você sim 💛 Qual dia você quer? Pode me mandar tipo *18/09*, *hoje* ou *amanhã*."
+
+    if any(x in t for x in ("quero agendar", "quero marcar", "quero fazer", "marca pra mim")):
+        return "Bora 😊💛 O que você quer fazer: *cílios, unhas ou sobrancelhas*?"
+
+    if any(x in t for x in ("quem e voce", "voce e robo", "voce e uma pessoa", "e humano")):
+        return "Sou a assistente virtual do Araújo Deluxe 💛 Mas pode falar comigo normal, viu? Eu consigo conversar, passar valores, ver horários e fazer seu agendamento por aqui."
+
+    return None
 
 
 async def wa_find_bookings(phone: str, only_pending: bool = False) -> List[dict]:
@@ -802,7 +929,11 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
 
     if lower in RESET_WORDS:
         await set_state("menu")
-        return {"reply": MENU_TEXT}
+        return {"reply": "Claro 💛 Voltamos pro começo. O que você quer fazer? Posso te ajudar com *cílios, unhas, sobrancelhas, valores ou horários*."}
+
+    natural_reply = await wa_natural_reply(text, state)
+    if natural_reply:
+        return {"reply": natural_reply}
 
     if state == "menu":
         if any(word in lower for word in ("agendar", "marcar", "agendamento")):
@@ -831,7 +962,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
                 lines.append(f"{emojis.get(b['status'], '•')} {b['service_name']} — {fmt_date_br(b['date'])} às {b['time']} ({b['status']}) · {b['code']}")
             lines.append("\nDigite *menu* para voltar.")
             return {"reply": "\n".join(lines)}
-        return {"reply": MENU_TEXT}
+        return {"reply": "Entendi 💛 Me fala um pouquinho melhor o que você está procurando. Pode ser sobre *cílios, unhas, sobrancelhas, valores, horários* ou agendamento que eu te ajudo por aqui 😊"}
 
     if state == "book_category":
         if "cilio" in lower or "cílio" in lower:
