@@ -243,17 +243,23 @@ async function sendBotReply(phone, jid, data, reply, dedupeKey) {
     return "text";
   }
 
-  // Always send a visible text fallback first. Some WhatsApp clients silently
-  // discard interactive payloads even when Baileys reports a successful relay.
   const fallback = uiTextFallback(data.ui, reply);
-  await safeSend(phone, jid, { text: fallback }, dedupeKey + ":text");
+
+  // The current Baileys/WhatsApp combination on this account has been observed
+  // to accept list payloads while rendering only an empty-looking second bubble.
+  // Default to one reliable message. Lists can be re-enabled explicitly after
+  // transport-level verification.
+  if (process.env.WHATSAPP_INTERACTIVE_LISTS !== "1") {
+    await safeSend(phone, jid, { text: fallback }, dedupeKey + ":text");
+    return "text-menu";
+  }
 
   try {
     await safeSend(phone, jid, listPayload, dedupeKey + ":list");
-    console.log("Menu interativo enviado para", jid);
-    return "text+list";
+    return "interactive-list";
   } catch (e) {
-    console.warn("Lista interativa falhou; texto já foi entregue:", e.message);
+    console.warn("Lista interativa falhou; usando texto:", e.message);
+    await safeSend(phone, jid, { text: fallback }, dedupeKey + ":text");
     return "text-fallback";
   }
 }
