@@ -16,7 +16,7 @@ const STATUS_STYLE = {
 };
 
 export default function AdminDashboard() {
-  const { user, logout } = useAuth();
+  const { user, logout, authError } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [tab, setTab] = useState("agenda");
@@ -40,27 +40,30 @@ export default function AdminDashboard() {
   }, [user, navigate]);
 
   const loadStats = useCallback(() => {
-    api.get("/admin/stats").then((r) => setStats(r.data)).catch(() => {});
+    api.get("/admin/stats").then((r) => setStats(r.data)).catch(error => toast.error(apiError(error)));
   }, []);
 
   const loadAgenda = useCallback(() => {
-    api.get(`/admin/agenda?date=${date}`).then((r) => setAgenda(r.data)).catch(() => {});
+    api.get(`/admin/agenda?date=${date}`).then((r) => setAgenda(r.data)).catch(error => toast.error(apiError(error)));
   }, [date]);
 
   const loadBookings = useCallback(() => {
-    api.get(`/admin/bookings${filter ? `?status=${filter}` : ""}`).then((r) => setBookings(r.data)).catch(() => {});
+    api.get(`/admin/bookings${filter ? `?status=${filter}` : ""}`).then((r) => setBookings(r.data)).catch(error => toast.error(apiError(error)));
   }, [filter]);
 
-  useEffect(() => { loadStats(); }, [loadStats]);
-  useEffect(() => { loadAgenda(); }, [loadAgenda]);
-  useEffect(() => { loadBookings(); }, [loadBookings]);
+  useEffect(() => { if (user) loadStats(); }, [user, loadStats]);
+  useEffect(() => { if (user && tab === "agenda") loadAgenda(); }, [user, tab, loadAgenda]);
+  useEffect(() => { if (user && tab === "bookings") loadBookings(); }, [user, tab, loadBookings]);
 
-  if (!user) return null;
+  if (!user) return <div className="min-h-screen bg-[#F1EBDD] flex flex-col items-center justify-center gap-4 px-6">
+    <p role="status">{authError || "Verificando sua sessão…"}</p>
+    {authError && <Link to="/admin" className="underline">Voltar ao login</Link>}
+  </div>;
 
   const refresh = () => {
     loadStats();
-    loadAgenda();
-    loadBookings();
+    if (tab === "agenda") loadAgenda();
+    if (tab === "bookings") loadBookings();
   };
 
   const block = async (time) => {

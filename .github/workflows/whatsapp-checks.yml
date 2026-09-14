@@ -1,7 +1,7 @@
 name: WhatsApp reliability checks
 on:
   push:
-    branches: [main, codex/whatsapp-persistence]
+    branches: [main, codex/whatsapp-persistence, codex/site-performance]
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,3 +27,19 @@ jobs:
       - run: python -m unittest discover -s backend/tests -p "test_bot_process.py" -v
         env:
           PYTHONPATH: backend
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+        env:
+          CI: "false"
+          REACT_APP_BACKEND_URL: ${{ vars.REACT_APP_BACKEND_URL }}

@@ -1,16 +1,26 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { motion } from "framer-motion";
+import { preloadDashboard } from "../lib/admin-preload";
 import { toast } from "sonner";
 import { Lock } from "@phosphor-icons/react";
 import { useAuth } from "../context/AuthContext";
-import { apiError } from "../lib/api";
+import { apiError, warmBackend } from "../lib/api";
 
 export default function AdminLogin() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    warmBackend();
+    preloadDashboard().catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!loading) { setSlow(false); return; }
+    const timer = setTimeout(() => setSlow(true), 5000);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   useEffect(() => {
     if (user && user !== false) navigate("/admin/dashboard");
@@ -31,10 +41,7 @@ export default function AdminLogin() {
 
   return (
     <div className="min-h-screen bg-[#221A0E] grain flex items-center justify-center px-6">
-      <motion.div
-        initial={{ opacity: 0, y: 30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+      <div
         className="glass-dark rounded-[2rem] p-10 w-full max-w-md relative z-10"
         data-testid="admin-login-card"
       >
@@ -46,6 +53,8 @@ export default function AdminLogin() {
         <form onSubmit={submit} className="mt-8 space-y-4">
           <input
             type="password"
+            autoComplete="current-password"
+            onFocus={() => { warmBackend(); preloadDashboard().catch(() => {}); }}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Senha"
@@ -61,11 +70,12 @@ export default function AdminLogin() {
           >
             {loading ? "Entrando…" : "Entrar"}
           </button>
+          {slow && <p role="status" className="text-white/70 text-xs">O servidor está demorando para responder. Aguarde; não é necessário enviar a senha novamente.</p>}
         </form>
         <Link to="/" className="block text-center text-white/40 text-xs mt-6 hover:text-primary transition-colors duration-300" data-testid="admin-login-back">
           ← Voltar ao site
         </Link>
-      </motion.div>
+      </div>
     </div>
   );
 }

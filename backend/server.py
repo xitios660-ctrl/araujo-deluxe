@@ -15,6 +15,7 @@ import io
 import re
 import base64
 import httpx
+import asyncio
 import hmac
 import hashlib
 from pymongo import UpdateOne, ReturnDocument
@@ -350,15 +351,17 @@ async def studio_info():
 async def login(data: LoginInput, request: Request):
     email = os.environ["ADMIN_EMAIL"].lower()
     identifier = f"{request.client.host}:admin"
-    attempt = await db.login_attempts.find_one({"identifier": identifier})
+    attempt, user = await asyncio.gather(
+        db.login_attempts.find_one({"identifier": identifier}),
+        db.users.find_one({"email": email}),
+    )
     now = datetime.now(timezone.utc)
     if attempt and attempt.get("count", 0) >= 5:
         locked_until = datetime.fromisoformat(attempt["locked_until"]) if attempt.get("locked_until") else None
         if locked_until and locked_until > now:
             raise HTTPException(status_code=429, detail="Muitas tentativas. Tente novamente em 15 minutos.")
         await db.login_attempts.delete_one({"identifier": identifier})
-    user = await db.users.find_one({"email": email})
-    if not user or not verify_password(data.password, user["password_hash"]):
+    if not user or not await asyncio.to_thread(verify_password, data.password, user["password_hash"]):
         count = (attempt.get("count", 0) + 1) if attempt else 1
         update = {"identifier": identifier, "count": count}
         if count >= 5:
@@ -430,12 +433,14 @@ async def delete_block(block_id: str, user: dict = Depends(get_current_user)):
 async def admin_stats(user: dict = Depends(get_current_user)):
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     month_prefix = today[:7]
-    today_count = await db.bookings.count_documents({"date": today, "status": {"$ne": "cancelada"}})
-    upcoming = await db.bookings.count_documents({"date": {"$gte": today}, "status": "confirmada"})
-    month_bookings = await db.bookings.find({"date": {"$regex": f"^{month_prefix}"}, "status": {"$in": ["confirmada", "concluida"]}}, {"_id": 0, "price": 1}).to_list(1000)
+    today_count, upcoming, month_bookings, pending, clients = await asyncio.gather(
+        db.bookings.count_documents({"date": today, "status": {"$ne": "cancelada"}}),
+        db.bookings.count_documents({"date": {"$gte": today}, "status": "confirmada"}),
+        db.bookings.find({"date": {"$regex": f"^{month_prefix}"}, "status": {"$in": ["confirmada", "concluida"]}}, {"_id": 0, "price": 1}).to_list(1000),
+        db.bookings.count_documents({"date": {"$gte": today}, "status": "pendente"}),
+        db.bookings.distinct("client_phone"),
+    )
     month_revenue = sum(b.get("price", 0) for b in month_bookings)
-    pending = await db.bookings.count_documents({"date": {"$gte": today}, "status": "pendente"})
-    clients = await db.bookings.distinct("client_phone")
     return {"today": today_count, "upcoming": upcoming, "pending": pending, "month_revenue": month_revenue, "total_clients": len(clients)}
 
 
