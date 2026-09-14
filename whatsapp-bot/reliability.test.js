@@ -1,0 +1,63 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { codec, usePersistentAuth } = require("./session-store");
+const { MessageGuard } = require("./message-guard");
+test("credentials and binary keys survive restart", async () => {
+  const baileys = await import("baileys");
+  const database = new Map();
+  const request = async (method, body) => {
+    if (method === "GET") return { entries: [...database].map(([key, value]) => ({key, value})) };
+    for (const entry of body.entries) {
+      if (entry.value === null) database.delete(entry.key); else database.set(entry.key, entry.value);
+    }
+    return { ok: true };
+  };
+  const first = await usePersistentAuth({ baileys, request, secret: "test-only" });
+  first.state.creds.me = { id: "test@s.whatsapp.net" };
+  await first.saveCreds();
+  await first.state.keys.set({ session: { alpha: Buffer.from([1,2,3]), obsolete: Buffer.from([4]) } });
+  await first.state.keys.set({ session: { obsolete: null } });
+  const restarted = await usePersistentAuth({ baileys, request, secret: "test-only" });
+  assert.equal(restarted.state.creds.me.id, "test@s.whatsapp.net");
+  const keys = await restarted.state.keys.get("session", ["alpha", "obsolete"]);
+  assert.deepEqual(Buffer.from(keys.alpha), Buffer.from([1,2,3]));
+  assert.equal(keys.obsolete, undefined);
+  assert.equal([...database.values()].some(v => v.includes("test@s.whatsapp.net")), false);
+});
+test("encryption rejects wrong key and tampering", () => {
+  const a = codec("a"), b = codec("b");
+  const value = a.encrypt("private");
+  assert.throws(() => b.decrypt(value));
+  const changed = Buffer.from(value, "base64"); changed[changed.length-1] ^= 1;
+  assert.throws(() => a.decrypt(changed.toString("base64")));
+});
+test("storage error never silently creates a replacement session", async () => {
+  await assert.rejects(usePersistentAuth({
+    baileys: await import("baileys"), secret: "test",
+    request: async () => { throw new Error("database unavailable"); },
+  }), /database unavailable/);
+});
+test("replays and duplicate sends are suppressed", async () => {
+  const g = new MessageGuard({ gapMs: 0 });
+  assert.equal(g.accept("a", "1"), true);
+  assert.equal(g.accept("a", "1"), false);
+  let count = 0;
+  await g.send("a", "same", async () => count++);
+  await g.send("a", "same", async () => count++);
+  assert.equal(count, 1);
+});
+test("contact and global limits are enforced", async () => {
+  const g = new MessageGuard({ gapMs: 0 });
+  for (let i=0; i<6; i++) await g.send("a", i, async () => {});
+  await assert.rejects(g.send("a", 7, async () => {}), /Limite/);
+  for (let i=0; i<9; i++) await g.send("b"+i, i, async () => {});
+  await assert.rejects(g.send("c", 1, async () => {}), /Limite/);
+});
+test("opt-out and circuit breaker prevent delivery", async () => {
+  const g = new MessageGuard({ gapMs: 0 });
+  const pending = g.send("a", "one", async () => assert.fail());
+  g.blocked.add("a");
+  await assert.rejects(pending, /parar/);
+  for (let i=0; i<3; i++) await assert.rejects(g.send("b", i, async () => { throw Error("network"); }));
+  await assert.rejects(g.send("c", "next", async () => assert.fail()), /pausados/);
+});

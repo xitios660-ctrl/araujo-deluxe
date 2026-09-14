@@ -1,0 +1,29 @@
+name: WhatsApp reliability checks
+on:
+  push:
+    branches: [main, codex/whatsapp-persistence]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.16.0"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: npm ci --prefix whatsapp-bot --no-audit --no-fund
+      - run: node --check whatsapp-bot/index.js
+      - run: node --test whatsapp-bot/reliability.test.js
+      - run: pip install -r backend/requirements-deploy.txt
+      - run: python -m py_compile backend/server.py backend/bot_process.py
+      - run: python -m unittest discover -s backend/tests -p "test_*internal.py" -v
+        env:
+          PYTHONPATH: backend
+      - run: python -m unittest discover -s backend/tests -p "test_bot_process.py" -v
+        env:
+          PYTHONPATH: backend

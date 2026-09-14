@@ -15,6 +15,9 @@ import io
 import re
 import base64
 import httpx
+import hmac
+import hashlib
+from pymongo import UpdateOne, ReturnDocument
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from bson import ObjectId
@@ -438,6 +441,71 @@ async def admin_stats(user: dict = Depends(get_current_user)):
 
 # ---------- Payment proof & WhatsApp bot ----------
 BOT_URL = os.environ["WHATSAPP_BOT_URL"]
+BOT_TOKEN = os.environ.get("WHATSAPP_INTERNAL_TOKEN") or hmac.new(
+    os.environ["JWT_SECRET"].encode(), b"whatsapp-internal", hashlib.sha256
+).hexdigest()
+BOT_HEADERS = {"X-Bot-Token": BOT_TOKEN}
+
+def require_bot(request: Request):
+    if not hmac.compare_digest(request.headers.get("X-Bot-Token", ""), BOT_TOKEN):
+        raise HTTPException(status_code=401, detail="Acesso não autorizado")
+
+async def require_bot_lease(request: Request):
+    require_bot(request)
+    lease = await db.wa_runtime.find_one({"_id": "lease"})
+    if not lease or lease.get("owner") != request.headers.get("X-Bot-Instance") or lease.get("until", "") <= datetime.now(timezone.utc).isoformat():
+        raise HTTPException(status_code=409, detail="Sessão em uso ou licença de execução expirada")
+
+class SessionEntry(BaseModel):
+    key: str = Field(min_length=1, max_length=500)
+    value: Optional[str] = Field(default=None, max_length=1000000)
+
+class SessionBatch(BaseModel):
+    entries: List[SessionEntry] = Field(max_length=1000)
+
+@api_router.post("/internal/whatsapp/lease")
+async def bot_lease(request: Request, auth=Depends(require_bot)):
+    owner = request.headers.get("X-Bot-Instance", "")
+    if not re.fullmatch(r"[a-f0-9-]{36}", owner):
+        raise HTTPException(status_code=400, detail="Instância inválida")
+    now = datetime.now(timezone.utc)
+    await db.wa_runtime.update_one({"_id": "lease"}, {"$setOnInsert": {"owner": "", "until": ""}}, upsert=True)
+    lease = await db.wa_runtime.find_one_and_update(
+        {"_id": "lease", "$or": [{"owner": owner}, {"until": {"$lte": now.isoformat()}}]},
+        {"$set": {"owner": owner, "until": (now + timedelta(seconds=60)).isoformat()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    return {"acquired": lease is not None}
+
+@api_router.delete("/internal/whatsapp/lease")
+async def release_bot_lease(request: Request, auth=Depends(require_bot)):
+    await db.wa_runtime.update_one({"_id": "lease", "owner": request.headers.get("X-Bot-Instance", "")}, {"$set": {"until": ""}})
+    return {"ok": True}
+
+@api_router.get("/internal/whatsapp/session")
+async def read_bot_session(auth=Depends(require_bot_lease)):
+    entries = await db.wa_auth.find({}, {"_id": 0, "key": 1, "value": 1}).to_list(100000)
+    return {"entries": entries}
+
+@api_router.post("/internal/whatsapp/session")
+async def write_bot_session(data: SessionBatch, auth=Depends(require_bot_lease)):
+    # Records contain only ciphertext encrypted by the bot.
+    operations = []
+    for entry in data.entries:
+        if entry.value is None:
+            await db.wa_auth.delete_one({"_id": entry.key})
+        else:
+            operations.append(UpdateOne({"_id": entry.key}, {"$set": {"key": entry.key, "value": entry.value}}, upsert=True))
+    if operations:
+        await db.wa_auth.bulk_write(operations, ordered=True)
+    return {"ok": True}
+
+@api_router.delete("/internal/whatsapp/session")
+async def clear_bot_session(auth=Depends(require_bot_lease)):
+    # Used exclusively by the explicit manager logout action.
+    await db.wa_auth.delete_many({})
+    return {"ok": True}
+
 bot_process = BotProcess(BOT_URL)
 OWNER_WA = os.environ["OWNER_WHATSAPP"]
 
@@ -458,18 +526,33 @@ def fmt_date_br(date_str: str) -> str:
     return parse_date(date_str).strftime("%d/%m/%Y")
 
 
+async def whatsapp_contact_allowed(phone: str):
+    phone = _digits(phone)
+    pref = await db.wa_preferences.find_one({"_id": phone})
+    if pref and pref.get("blocked"):
+        return False
+    if phone == _digits(OWNER_WA):
+        return True
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    return bool(pref and pref.get("last_incoming", "") >= since)
+
+
 async def bot_send_text(phone: str, message: str):
+    if not await whatsapp_contact_allowed(phone):
+        return
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            await c.post(f"{BOT_URL}/send", json={"phone": _digits(phone), "message": message})
+            await c.post(f"{BOT_URL}/send", headers=BOT_HEADERS, json={"phone": _digits(phone), "message": message})
     except Exception as e:
         logging.getLogger(__name__).warning(f"Bot send falhou: {e}")
 
 
 async def bot_send_image(phone: str, caption: str, base64_data: str, mimetype: str):
+    if not await whatsapp_contact_allowed(phone):
+        return
     try:
         async with httpx.AsyncClient(timeout=40) as c:
-            await c.post(f"{BOT_URL}/send-image", json={"phone": _digits(phone), "caption": caption, "base64": base64_data, "mimetype": mimetype})
+            await c.post(f"{BOT_URL}/send-image", headers=BOT_HEADERS, json={"phone": _digits(phone), "caption": caption, "base64": base64_data, "mimetype": mimetype})
     except Exception as e:
         logging.getLogger(__name__).warning(f"Bot send-image falhou: {e}")
 
@@ -536,7 +619,7 @@ async def get_proof(proof_id: str, user: dict = Depends(get_current_user)):
 async def whatsapp_status(user: dict = Depends(get_current_user)):
     try:
         async with httpx.AsyncClient(timeout=6) as c:
-            r = await c.get(f"{BOT_URL}/status")
+            r = await c.get(f"{BOT_URL}/status", headers=BOT_HEADERS)
             return r.json()
     except Exception:
         return {"connected": False, "has_qr": False, "offline": True}
@@ -546,7 +629,7 @@ async def whatsapp_status(user: dict = Depends(get_current_user)):
 async def whatsapp_qr(user: dict = Depends(get_current_user)):
     try:
         async with httpx.AsyncClient(timeout=6) as c:
-            r = await c.get(f"{BOT_URL}/qr")
+            r = await c.get(f"{BOT_URL}/qr", headers=BOT_HEADERS)
             qr = r.json().get("qr")
             return {"qr_base64": pix_qr_base64(qr) if qr else None}
     except Exception:
@@ -557,7 +640,7 @@ async def whatsapp_qr(user: dict = Depends(get_current_user)):
 async def whatsapp_logout(user: dict = Depends(get_current_user)):
     try:
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(f"{BOT_URL}/logout")
+            r = await c.post(f"{BOT_URL}/logout", headers=BOT_HEADERS)
             return r.json()
     except Exception:
         raise HTTPException(status_code=502, detail="Serviço do bot indisponível")
@@ -571,7 +654,8 @@ MENU_TEXT = (
     "*2* — Ver horários disponíveis\n"
     "*3* — Enviar comprovante do sinal\n"
     "*4* — Minhas reservas\n\n"
-    "Responda com o *número* da opção desejada."
+    "Pode me dizer o que precisa ou escolher uma opção.\n"
+    "Para interromper mensagens: PARAR. Para retomar: REATIVAR."
 )
 
 RESET_WORDS = {"menu", "0", "voltar", "inicio", "início", "oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "cancelar", "sair"}
@@ -668,10 +752,19 @@ async def wa_create_booking(service_id: str, date_str: str, time_str: str, name:
 
 
 @api_router.post("/whatsapp/incoming")
-async def whatsapp_incoming(data: WAIncoming):
+async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
     phone = _digits(data.phone)
     text = (data.text or "").strip()
     lower = text.lower()
+    if lower in {"parar", "sair", "stop", "não quero receber mensagens", "nao quero receber mensagens"}:
+        await db.wa_preferences.update_one({"_id": phone}, {"$set": {"blocked": True}}, upsert=True)
+        return {"reply": None}
+    if lower in {"reativar", "voltar"}:
+        await db.wa_preferences.update_one({"_id": phone}, {"$set": {"blocked": False}}, upsert=True)
+    preference = await db.wa_preferences.find_one({"_id": phone})
+    if preference and preference.get("blocked"):
+        return {"reply": None}
+    await db.wa_preferences.update_one({"_id": phone}, {"$set": {"last_incoming": datetime.now(timezone.utc).isoformat()}}, upsert=True)
 
     session = await db.wa_sessions.find_one({"phone": phone}, {"_id": 0})
     state = session.get("state", "menu") if session else "menu"
@@ -707,6 +800,14 @@ async def whatsapp_incoming(data: WAIncoming):
         return {"reply": MENU_TEXT}
 
     if state == "menu":
+        if any(word in lower for word in ("agendar", "marcar", "agendamento")):
+            lower = "1"
+        elif "dispon" in lower or "horário livre" in lower or "horario livre" in lower:
+            lower = "2"
+        elif "comprovante" in lower:
+            lower = "3"
+        elif "minha reserva" in lower or "meus agendamentos" in lower:
+            lower = "4"
         if lower.startswith("1"):
             await set_state("book_category")
             return {"reply": CATEGORY_MENU}
@@ -728,14 +829,23 @@ async def whatsapp_incoming(data: WAIncoming):
         return {"reply": MENU_TEXT}
 
     if state == "book_category":
+        if "cilio" in lower or "cílio" in lower:
+            lower = "1"
+        elif "unha" in lower:
+            lower = "2"
+        elif "sobrancelha" in lower:
+            lower = "3"
         if lower.isdigit() and 1 <= int(lower) <= 3:
             cat = CATEGORY_KEYS[int(lower) - 1]
             await set_state("book_service", {"category": cat})
             return {"reply": services_menu_text(cat)}
-        return {"reply": "Não entendi. 😅 Responda *1* para Cílios, *2* para Unhas ou *3* para Sobrancelhas. (*0* volta ao menu)"}
+        return {"reply": "Você quer fazer cílios, unhas ou sobrancelhas? Pode escrever o nome ou escolher 1, 2 ou 3. 💛"}
 
     if state == "book_service":
         cat_services = [s for s in SERVICES if s["category"] == sdata.get("category")]
+        named = [i for i, service in enumerate(cat_services, 1) if lower == service["name"].lower()]
+        if len(named) == 1:
+            lower = str(named[0])
         if lower.isdigit() and 1 <= int(lower) <= len(cat_services):
             service = cat_services[int(lower) - 1]
             await set_state("book_date", {"service_id": service["id"]})
@@ -767,6 +877,11 @@ async def whatsapp_incoming(data: WAIncoming):
 
     if state == "book_time":
         slots = sdata.get("slots", [])
+        requested_time = lower.replace("h", ":").strip()
+        if re.fullmatch(r"\d{1,2}:", requested_time):
+            requested_time += "00"
+        if requested_time in slots:
+            lower = str(slots.index(requested_time) + 1)
         if lower.isdigit() and 1 <= int(lower) <= len(slots):
             await set_state("book_name", {**sdata, "time": slots[int(lower) - 1]})
             return {"reply": "Perfeito! 🥰 Agora me diga seu *nome completo* para finalizar a reserva."}
@@ -832,7 +947,7 @@ async def seed_admin():
     # Start after database initialization; callbacks need a ready API.
     try:
         async with httpx.AsyncClient(timeout=2) as c:
-            response = await c.get(f"{BOT_URL}/status")
+            response = await c.get(f"{BOT_URL}/status", headers=BOT_HEADERS)
             response.raise_for_status()
     except (httpx.HTTPError, ValueError):
         await bot_process.start()

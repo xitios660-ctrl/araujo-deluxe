@@ -11,7 +11,7 @@ export const WhatsAppPanel = () => {
     try {
       const { data } = await api.get("/admin/whatsapp/status");
       setStatus(data);
-      if (!data.connected && !data.offline) {
+      if (!data.connected && !data.offline && !data.halted) {
         const r = await api.get("/admin/whatsapp/qr");
         setQr(r.data.qr_base64 || null);
       } else {
@@ -52,11 +52,17 @@ export const WhatsAppPanel = () => {
           </span>
         ) : (
           <span className="rounded-full bg-amber-100 text-amber-800 text-xs font-semibold px-4 py-2 flex items-center gap-2" data-testid="whatsapp-status-disconnected">
-            <Plugs size={15} /> {status?.offline ? "Serviço indisponível" : "Desconectado"}
+            <Plugs size={15} /> {status?.offline ? "Serviço indisponível" : status?.halted ? "Atenção necessária" : "Desconectado"}
           </span>
         )}
       </div>
 
+      {status?.halted && <p className="text-sm text-amber-800 bg-amber-50 rounded-xl p-4 mb-4">{status.halted}</p>}
+      <p className="text-xs text-muted-foreground mb-4">
+        {status?.session_storage === "encrypted_database" ? "Sessão salva com criptografia no banco. Reinícios comuns não precisam de novo QR Code." : "Verificando armazenamento da sessão…"}
+        {" "}Proteções contra excesso de mensagens ativas quando o serviço atualizado está disponível.
+        Envie PARAR para interromper o atendimento automático e REATIVAR para retomar.
+      </p>
       {status?.connected ? (
         <div className="max-w-lg" data-testid="whatsapp-connected-box">
           <p className="text-sm text-foreground">
@@ -83,7 +89,7 @@ export const WhatsAppPanel = () => {
             ) : (
               <div className="text-center text-muted-foreground text-xs">
                 <QrCode size={40} className="mx-auto mb-3 text-primary" />
-                {status?.offline ? "O bot não está respondendo. A conexão será verificada novamente automaticamente." : "Gerando QR Code…"}
+                {status?.offline ? "O bot não está respondendo. A conexão será verificada novamente automaticamente." : status?.halted ? "A sessão exige atenção. Não é necessário escanear repetidamente." : "Gerando QR Code…"}
               </div>
             )}
           </div>
