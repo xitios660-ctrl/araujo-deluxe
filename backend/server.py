@@ -1439,7 +1439,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         )
 
     if state in ("book_date", "avail_date"):
-        ds = parse_br_date(text)
+        ds = wa_date_from_sentence(text) or parse_br_date(text)
         if not ds:
             return {"reply": "Data inválida. 😅 Digite no formato *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*."}
         if ds < datetime.now(TZ).strftime("%Y-%m-%d"):
@@ -1461,7 +1461,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
 
     if state == "book_time":
         slots = sdata.get("slots", [])
-        requested_time = lower.replace("h", ":").strip()
+        requested_time = wa_time_from_sentence(text) or lower.replace("h", ":").strip()
         if re.fullmatch(r"\d{1,2}:", requested_time):
             requested_time += "00"
         if requested_time in slots:
