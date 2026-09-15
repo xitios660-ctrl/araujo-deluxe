@@ -1460,6 +1460,7 @@ async def wa_update_memory_profile(phone: str, name: Optional[str] = None, servi
         updates["name"] = clean_name
     if service_id in SERVICES_BY_ID:
         updates["last_service_id"] = service_id
+        updates["last_service_at"] = updates["last_seen"]
     await db.wa_memories.update_one(
         {"_id": _digits(phone)},
         {"$set": updates, "$setOnInsert": {"first_seen": updates["last_seen"], "message_count": 0}},
@@ -1490,6 +1491,7 @@ async def wa_remember_message(
         set_values["name"] = remembered_name
     if service_id in SERVICES_BY_ID:
         set_values["last_service_id"] = service_id
+        set_values["last_service_at"] = now
 
     await db.wa_memories.update_one(
         {"_id": phone},
@@ -1523,6 +1525,40 @@ def wa_memory_name(memory: Optional[dict]) -> Optional[str]:
 
 def wa_memory_service(memory: Optional[dict]) -> Optional[dict]:
     return SERVICES_BY_ID.get((memory or {}).get("last_service_id"))
+
+
+def wa_recent_memory_service(memory: Optional[dict], max_age_hours: int = 12, now: Optional[datetime] = None) -> Optional[dict]:
+    memory = memory or {}
+    service = SERVICES_BY_ID.get(memory.get("last_service_id"))
+    if not service:
+        return None
+
+    stamp = memory.get("last_service_at")
+    if not stamp:
+        # Backward compatibility for memories written before last_service_at existed.
+        # Recover the timestamp only from a history entry that actually mentions
+        # the same service, instead of trusting generic last_seen.
+        for item in reversed(memory.get("history") or []):
+            parsed = wa_service_from_text(item.get("text") or "")
+            if parsed and parsed["id"] == service["id"] and item.get("at"):
+                stamp = item["at"]
+                break
+    if not stamp:
+        return None
+
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if now - when > timedelta(hours=max_age_hours):
+        return None
+    return service
 
 
 def wa_date_from_sentence(text: str, now: Optional[datetime] = None) -> Optional[str]:
@@ -1661,10 +1697,16 @@ def resolve_requested_slot(text: str, slots: List[str], daypart: Optional[str] =
         return None
     if requested in slots:
         return requested
-    hour = requested.split(":")[0]
-    same_hour = [slot for slot in slots if slot.startswith(hour + ":")]
-    if len(same_hour) == 1:
-        return same_hour[0]
+    hour = int(requested.split(":")[0])
+    candidate_hours = [hour]
+    if 1 <= hour <= 11 and daypart not in {"morning"}:
+        candidate_hours.append(hour + 12)
+    matches = [
+        slot for slot in slots
+        if int(slot.split(":")[0]) in candidate_hours
+    ]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
@@ -1745,7 +1787,7 @@ def wa_category_from_context(text: str = "", memory: Optional[dict] = None, sdat
     if service_id in SERVICES_BY_ID:
         return SERVICES_BY_ID[service_id]["category"]
 
-    remembered = wa_memory_service(memory)
+    remembered = wa_recent_memory_service(memory)
     if remembered:
         return remembered["category"]
 
@@ -1783,7 +1825,7 @@ def wa_service_from_context(text: str, memory: Optional[dict], sdata: Optional[d
     sdata = sdata or {}
     if sdata.get("service_id") in SERVICES_BY_ID:
         return SERVICES_BY_ID[sdata["service_id"]]
-    return wa_memory_service(memory)
+    return wa_recent_memory_service(memory)
 
 
 def wa_services_for_category(category: str, include_maintenance: bool = False) -> List[dict]:
@@ -1902,7 +1944,7 @@ async def wa_conversation_action(
 
     remembered_service = wa_service_from_context(text, memory, sdata)
     if any(p in t for p in ("ta caro", "esta caro", "achei caro", "muito caro", "caro kkk", "pesado no bolso")):
-        base = remembered_service or wa_memory_service(memory)
+        base = remembered_service or wa_recent_memory_service(memory)
         if base:
             pool = [
                 s for s in wa_services_for_category(base["category"], include_maintenance=False)
@@ -1956,7 +1998,7 @@ async def wa_conversation_action(
     # Follow-up "sim" should continue the conversation the bot itself just started.
     if t in {"sim", "aham", "uhum", "pode", "pode sim", "quero", "bora", "vamos", "fechado"}:
         last_out = wa_normalize((memory or {}).get("last_outgoing_text", ""))
-        remembered = wa_memory_service(memory)
+        remembered = wa_recent_memory_service(memory)
         if remembered and any(p in last_out for p in (
             "ja vejo um horario", "ja marco", "se voce gostar", "quer continuar por ele",
             "quer marcar", "vamos de", "qual dia voce quer", "qual dia voce prefere",
@@ -2076,7 +2118,7 @@ async def wa_smart_action(
         return None
 
     service = wa_service_from_text(text)
-    remembered_service = wa_memory_service(memory)
+    remembered_service = wa_recent_memory_service(memory)
     if not service and state in {"book_date", "book_time", "book_name"} and sdata.get("service_id") in SERVICES_BY_ID:
         service = SERVICES_BY_ID[sdata["service_id"]]
 
@@ -2145,6 +2187,26 @@ async def wa_smart_action(
 
     daypart = wa_daypart_from_text(text) or sdata.get("daypart")
     date_str = wa_date_from_sentence(text)
+
+    if state in {"book_category", "book_service"} and wa_daypart_from_text(text) and not service and not category:
+        updated = {**sdata, "daypart": daypart}
+        await set_state(state, updated)
+        period_label = {
+            "morning": "de manhã",
+            "afternoon": "de tarde",
+            "late_afternoon": "mais pro final da tarde",
+            "evening": "à noite",
+        }.get(daypart, "nesse período")
+        if state == "book_category":
+            return wa_reply(
+                f"Sim 😊 Vou considerar *{period_label}*. Só me diz qual procedimento você quer, "
+                "porque a duração muda os horários que encaixam.",
+                wa_category_ui(),
+            )
+        return wa_reply(
+            f"Perfeito, vou filtrar *{period_label}* 💛 Qual serviço você quer?",
+            wa_services_ui(sdata.get("category")) if sdata.get("category") in CATEGORY_KEYS else wa_category_ui(),
+        )
     if not date_str and state in {"book_time", "avail_pick"} and daypart:
         date_str = sdata.get("date")
     time_str = wa_time_from_sentence(text, default_daypart=daypart)
@@ -2241,6 +2303,9 @@ async def wa_smart_action(
             return wa_reply(f"Pra *{fmt_date_br(date_str)}* não tenho horário livre{suffix} para *{service['name']}* 😔 Quer outro período ou outro dia?")
         await wa_update_memory_profile(phone, service_id=service["id"])
         if time_str:
+            resolved_time = resolve_requested_slot(text, available, daypart)
+            if resolved_time:
+                time_str = resolved_time
             if time_str not in available:
                 return wa_reply(
                     f"Às *{time_str}* não está livre em {fmt_date_br(date_str)} 😔 "

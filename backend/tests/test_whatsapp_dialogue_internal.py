@@ -136,6 +136,29 @@ class AvailabilityLanguageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update["data"]["date"], "2026-09-16")
         self.assertEqual(update["data"]["time"], "15:30")
 
+    async def test_daypart_followup_while_waiting_for_service_keeps_date_context(self):
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={
+            "state": "book_category",
+            "data": {"date": "2026-09-16"},
+        })
+        fake.wa_sessions.update_one = AsyncMock()
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="e de tarde?", push_name="Cliente"),
+                auth={"test": True},
+            )
+        self.assertIn("de tarde", result["reply"].lower())
+        self.assertIn("procedimento", result["reply"].lower())
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "book_category")
+        self.assertEqual(update["data"]["date"], "2026-09-16")
+        self.assertEqual(update["data"]["daypart"], "afternoon")
+
     async def test_followup_day_keeps_availability_context(self):
         day = {
             "date": "2026-09-16", "weekday_name": "Quarta-feira",

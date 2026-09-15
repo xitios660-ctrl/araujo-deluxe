@@ -73,6 +73,22 @@ class NaturalLanguageMatrixTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(server.wa_daypart_from_text(text), expected)
 
+    def test_recent_service_context_expires(self):
+        now = server.datetime(2026, 9, 15, 12, 0, tzinfo=server.timezone.utc)
+        fresh = {
+            "last_service_id": "glamour",
+            "last_service_at": "2026-09-15T08:30:00+00:00",
+        }
+        stale = {
+            "last_service_id": "glamour",
+            "last_service_at": "2026-09-14T08:30:00+00:00",
+        }
+        self.assertEqual(server.wa_recent_memory_service(fresh, now=now)["id"], "glamour")
+        self.assertIsNone(server.wa_recent_memory_service(stale, now=now))
+
+    def test_ambiguous_three_can_match_single_afternoon_slot(self):
+        self.assertEqual(server.resolve_requested_slot("umas 3", ["09:00", "15:30", "17:00"]), "15:30")
+
     def test_relative_dates(self):
         now = server.datetime(2026, 9, 15, 10, 0, tzinfo=server.TZ)
         cases = {
