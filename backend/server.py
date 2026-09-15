@@ -2139,7 +2139,7 @@ async def wa_priority_action(
     if not service and any(p in t for p in ("tabela de preco", "tabela de precos", "precos", "valores", "quanto sao os procedimentos")):
         return wa_reply(wa_generic_prices_text())
 
-    if any(p in t for p in ("horario de funcionamento", "horarios de funcionamento", "que horas abre", "que horas fecha", "quais dias atende", "quais dias voces atendem", "abre domingo", "atende domingo")):
+    if any(p in t for p in ("horario de funcionamento", "horarios de funcionamento", "que horas abre", "que horas fecha", "quais dias atende", "quais dias atendem", "quais dias voces atendem", "abre domingo", "atende domingo", "atendem domingo", "voces atendem domingo")):
         return wa_reply(wa_business_hours_text())
 
     if not service and any(p in t for p in ("aceita pix", "como paga", "como eu pago", "forma de pagamento", "formas de pagamento", "quanto e o sinal", "valor do sinal")):
