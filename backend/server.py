@@ -842,10 +842,12 @@ async def update_booking(booking_id: str, data: StatusUpdate, user: dict = Depen
         })
 
     try:
-        await db.bookings.update_one(
-            {"id": booking_id},
+        claimed = await db.bookings.update_one(
+            {"id": booking_id, "status": old_status},
             {"$set": updates},
         )
+        if getattr(claimed, "matched_count", 1) == 0:
+            raise HTTPException(status_code=409, detail="O agendamento foi alterado por outra ação. Atualize e tente novamente.")
     finally:
         if locked_slots:
             await release_booking_slot(booking["date"], booking["time"], locked_slots)
@@ -2835,8 +2837,13 @@ async def wa_move_booking(booking_id: str, new_date: str, new_time: str) -> dict
         slot = next((s for s in refreshed["slots"] if s["time"] == new_time), None)
         if not refreshed["open"] or not slot or not slot["available"]:
             raise BookingSlotError("slot_taken", "Esse horário não está mais disponível.")
-        await db.bookings.update_one(
-            {"id": booking_id},
+        moved = await db.bookings.update_one(
+            {
+                "id": booking_id,
+                "status": booking.get("status"),
+                "date": booking.get("date"),
+                "time": booking.get("time"),
+            },
             {"$set": {
                 "date": new_date,
                 "time": new_time,
@@ -2846,6 +2853,11 @@ async def wa_move_booking(booking_id: str, new_date: str, new_time: str) -> dict
                 "rescheduled_source": "whatsapp",
             }},
         )
+        if getattr(moved, "matched_count", 1) == 0:
+            raise BookingSlotError(
+                "booking_changed",
+                "Esse agendamento foi alterado enquanto eu tentava remarcar. Consulte sua reserva e tente de novo.",
+            )
         logging.getLogger(__name__).info("BOOKING_RESCHEDULED booking_id=%s date=%s time=%s", booking_id[:8], new_date, new_time)
     finally:
         await release_booking_slot(new_date, new_time, locked)

@@ -288,6 +288,60 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
 
 
 
+    async def test_reschedule_detects_concurrent_booking_change(self):
+        booking = {
+            "id": "b-race",
+            "service_id": "brasileiro",
+            "service_name": "Volume Brasileiro",
+            "date": "2026-09-18",
+            "time": "09:00",
+            "status": "confirmada",
+            "duration_minutes": 120,
+            "buffer_minutes": 0,
+        }
+        fake = MagicMock()
+        fake.bookings.find_one = AsyncMock(return_value=booking)
+        changed = MagicMock()
+        changed.matched_count = 0
+        fake.bookings.update_one = AsyncMock(return_value=changed)
+        available = available_day("2026-09-19", "14:00")
+        lock = AsyncMock(return_value=["14:00"])
+        release = AsyncMock()
+
+        with patch.object(server, "db", fake), \
+             patch.object(server, "get_day_availability", AsyncMock(side_effect=[available, available])), \
+             patch.object(server, "acquire_booking_slot", lock), \
+             patch.object(server, "release_booking_slot", release):
+            with self.assertRaises(server.BookingSlotError) as ctx:
+                await server.wa_move_booking("b-race", "2026-09-19", "14:00")
+        self.assertEqual(ctx.exception.code, "booking_changed")
+        release.assert_awaited_once_with("2026-09-19", "14:00", ["14:00"])
+
+    async def test_admin_status_update_detects_concurrent_change(self):
+        booking = {
+            "id": "b-status-race",
+            "service_id": "brasileiro",
+            "service_name": "Volume Brasileiro",
+            "date": "2026-09-18",
+            "time": "09:00",
+            "client_phone": "5511999999999",
+            "status": "confirmada",
+            "payment_status": "confirmado",
+        }
+        fake = MagicMock()
+        fake.bookings.find_one = AsyncMock(return_value=booking)
+        changed = MagicMock()
+        changed.matched_count = 0
+        fake.bookings.update_one = AsyncMock(return_value=changed)
+        with patch.object(server, "db", fake):
+            with self.assertRaises(server.HTTPException) as ctx:
+                await server.update_booking(
+                    "b-status-race",
+                    server.StatusUpdate(status="concluida"),
+                    user={"id": "admin"},
+                )
+        self.assertEqual(ctx.exception.status_code, 409)
+
     async def test_timed_block_rejects_middle_of_long_booking(self):
         fake_db = MagicMock()
         fake_db.bookings.find.return_value.to_list = AsyncMock(return_value=[{
