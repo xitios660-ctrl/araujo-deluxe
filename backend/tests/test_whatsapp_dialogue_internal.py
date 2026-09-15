@@ -48,9 +48,7 @@ class AvailabilityLanguageTests(unittest.IsolatedAsyncioTestCase):
                 "Para dia 16/09 tem horário", "menu", {}, "5511999999999", {}, setter
             )
         self.assertIn("16/09/2026", result["reply"])
-        self.assertIn("09:00", result["reply"])
-        self.assertIn("15:30", result["reply"])
-        self.assertNotIn("11:00", result["reply"])
+        self.assertIn("qual procedimento", result["reply"].lower())
         self.assertNotIn("qual dia", result["reply"].lower())
 
     async def test_time_pick_after_availability_keeps_date(self):
@@ -154,7 +152,7 @@ class AvailabilityLanguageTests(unittest.IsolatedAsyncioTestCase):
                 "E dia 16/09?", "menu", {}, "5511999999999", memory, setter
             )
         self.assertIn("16/09/2026", result["reply"])
-        self.assertIn("17:00", result["reply"])
+        self.assertIn("qual procedimento", result["reply"].lower())
         self.assertNotIn("menu", result["reply"].lower())
 
 
