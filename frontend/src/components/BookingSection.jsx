@@ -15,6 +15,25 @@ const slide = {
   exit: { opacity: 0, x: -60, rotateY: -6, transition: { duration: 0.35 } },
 };
 
+const PROOF_ACCEPT = "image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.pdf";
+const PROOF_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"]);
+
+const validProofFile = (file) => {
+  if (!file) return false;
+  if (file.size > 8 * 1024 * 1024) {
+    toast.error("Arquivo muito grande (máx. 8 MB)");
+    return false;
+  }
+  const type = (file.type || "").toLowerCase();
+  const extension = (file.name || "").split(".").pop()?.toLowerCase();
+  const validExtension = ["jpg", "jpeg", "png", "webp", "heic", "heif", "pdf"].includes(extension);
+  if (!PROOF_TYPES.has(type) && !validExtension) {
+    toast.error("Envie o comprovante em JPG, PNG, WEBP, HEIC ou PDF");
+    return false;
+  }
+  return true;
+};
+
 export const BookingSection = ({ preselected }) => {
   const [step, setStep] = useState(0);
   const [services, setServices] = useState([]);
@@ -28,8 +47,7 @@ export const BookingSection = ({ preselected }) => {
   const [proofUploading, setProofUploading] = useState(false);
 
   const uploadProof = async (file) => {
-    if (!file) return;
-    if (file.size > 8 * 1024 * 1024) return toast.error("Arquivo muito grande (máx 8MB)");
+    if (!validProofFile(file)) return;
     setProofUploading(true);
     try {
       const b64 = await new Promise((res, rej) => {
@@ -134,7 +152,7 @@ export const BookingSection = ({ preselected }) => {
   const waLink = () => {
     const dateFmt = format(new Date(booking.date + "T12:00:00"), "dd/MM/yyyy");
     const msg = booking.payment
-      ? `Olá! Fiz uma reserva no Araújo Deluxe ✨\n\nServiço: ${booking.service_name}\nData: ${dateFmt} às ${booking.time}\nCódigo: ${booking.code}\n\nSegue o comprovante do sinal de R$ ${booking.payment.amount} via PIX.`
+      ? `Olá! Fiz uma reserva no Araújo Deluxe ✨\n\nServiço: ${booking.service_name}\nData: ${dateFmt} às ${booking.time}\nCódigo: ${booking.code}\n\nMeu sinal é de R$ ${booking.payment.amount}. Vou enviar o comprovante para análise pelo site ou por aqui.`
       : `Olá! Acabei de agendar no Araújo Deluxe ✨\n\nServiço: ${booking.service_name}\nData: ${dateFmt} às ${booking.time}\nCódigo: ${booking.code}`;
     return `https://wa.me/${booking.whatsapp}?text=${encodeURIComponent(msg)}`;
   };
@@ -370,7 +388,7 @@ export const BookingSection = ({ preselected }) => {
                           <label className={`mt-4 w-full rounded-full bg-primary text-white text-sm font-semibold py-3.5 flex items-center justify-center gap-2 cursor-pointer ${proofUploading ? "opacity-60 pointer-events-none" : ""}`}>
                             <UploadSimple size={19} weight="bold" />
                             {proofUploading ? "Enviando…" : "Enviar novo comprovante"}
-                            <input type="file" accept="image/*,application/pdf" className="hidden" disabled={proofUploading} onChange={(e) => uploadProof(e.target.files?.[0])} />
+                            <input type="file" accept={PROOF_ACCEPT} className="hidden" disabled={proofUploading} onChange={(e) => uploadProof(e.target.files?.[0])} />
                           </label>
                         </div>
                       ) : booking.status === "pendente" ? (
@@ -402,7 +420,7 @@ export const BookingSection = ({ preselected }) => {
                             {proofUploading ? "Enviando comprovante…" : "Enviar comprovante (foto ou PDF)"}
                             <input
                               type="file"
-                              accept="image/*,application/pdf"
+                              accept={PROOF_ACCEPT}
                               className="hidden"
                               disabled={proofUploading}
                               onChange={(e) => uploadProof(e.target.files?.[0])}
@@ -430,7 +448,7 @@ export const BookingSection = ({ preselected }) => {
                     className="inline-flex mt-6 rounded-full bg-[#25D366] text-white text-sm font-semibold px-8 py-3.5 items-center gap-2 transition-transform duration-300 hover:scale-105"
                     data-testid="booking-whatsapp-button"
                   >
-                    <WhatsappLogo size={19} weight="fill" /> Avisar no WhatsApp
+                    <WhatsappLogo size={19} weight="fill" /> Abrir WhatsApp
                   </a>
                 )}
                 <div>

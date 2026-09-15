@@ -17,6 +17,25 @@ const bookingBadge = (booking) => {
   return STATUS_BADGE[booking.status] || [booking.status, "bg-muted"];
 };
 
+const PROOF_ACCEPT = "image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.pdf";
+const PROOF_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"]);
+
+const validProofFile = (file) => {
+  if (!file) return false;
+  if (file.size > 8 * 1024 * 1024) {
+    toast.error("Arquivo muito grande (máx. 8 MB)");
+    return false;
+  }
+  const type = (file.type || "").toLowerCase();
+  const extension = (file.name || "").split(".").pop()?.toLowerCase();
+  const validExtension = ["jpg", "jpeg", "png", "webp", "heic", "heif", "pdf"].includes(extension);
+  if (!PROOF_TYPES.has(type) && !validExtension) {
+    toast.error("Envie o comprovante em JPG, PNG, WEBP, HEIC ou PDF");
+    return false;
+  }
+  return true;
+};
+
 export const MyBookings = () => {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
@@ -26,8 +45,7 @@ export const MyBookings = () => {
   const [uploadingId, setUploadingId] = useState(null);
 
   const uploadProof = async (id, file) => {
-    if (!file) return;
-    if (file.size > 8 * 1024 * 1024) return toast.error("Arquivo muito grande (máx 8MB)");
+    if (!validProofFile(file)) return;
     setUploadingId(id);
     try {
       const b64 = await new Promise((res, rej) => {
@@ -180,7 +198,7 @@ export const MyBookings = () => {
                     <span>O comprovante não foi aprovado. Confira o pagamento e envie um novo comprovante.</span>
                     <label className={`rounded-full bg-primary text-white font-semibold px-4 py-2 cursor-pointer ${uploadingId === b.id ? "opacity-60 pointer-events-none" : ""}`} data-testid={`mybookings-proof-${b.code}`}>
                       {uploadingId === b.id ? "Enviando…" : "Enviar novo comprovante"}
-                      <input type="file" accept="image/*,application/pdf" className="hidden" onChange={(e) => uploadProof(b.id, e.target.files?.[0])} />
+                      <input type="file" accept={PROOF_ACCEPT} className="hidden" onChange={(e) => uploadProof(b.id, e.target.files?.[0])} />
                     </label>
                   </div>
                 )}
@@ -189,7 +207,7 @@ export const MyBookings = () => {
                     <span>Aguardando o sinal via PIX. Envie o comprovante aqui para análise.</span>
                     <label className={`rounded-full bg-primary text-white font-semibold px-4 py-2 cursor-pointer ${uploadingId === b.id ? "opacity-60 pointer-events-none" : ""}`} data-testid={`mybookings-proof-${b.code}`}>
                       {uploadingId === b.id ? "Enviando…" : "Enviar comprovante"}
-                      <input type="file" accept="image/*,application/pdf" className="hidden" onChange={(e) => uploadProof(b.id, e.target.files?.[0])} />
+                      <input type="file" accept={PROOF_ACCEPT} className="hidden" onChange={(e) => uploadProof(b.id, e.target.files?.[0])} />
                     </label>
                   </div>
                 )}
