@@ -788,42 +788,26 @@ async def store_proof_for_review(booking: dict, data_base64: str, mime: str, sou
 
     date_br = fmt_date_br(booking["date"])
     if notify_client:
-        client_msg = (
-            "📥 *Comprovante recebido!*
+        client_msg = f"""📥 *Comprovante recebido!*
 
-"
-            "Seu comprovante foi enviado e está *EM ANÁLISE*.
-"
-            "Assim que ele for aprovado ou não aprovado, eu te aviso por aqui. 💛
+Seu comprovante foi enviado e está *EM ANÁLISE*.
+Assim que ele for aprovado ou não aprovado, eu te aviso por aqui. 💛
 
-"
-            f"📋 {booking['service_name']}
-"
-            f"📅 {date_br} às {booking['time']}
-"
-            f"🔑 Código: {booking['code']}"
-        )
+📋 {booking['service_name']}
+📅 {date_br} às {booking['time']}
+🔑 Código: {booking['code']}"""
         await bot_send_text(booking["client_phone"], client_msg, transactional=True)
 
-    owner_msg = (
-        "📥 *Novo comprovante para analisar!*
+    owner_msg = f"""📥 *Novo comprovante para analisar!*
 
-"
-        f"👤 {booking['client_name']}
-"
-        f"📱 {booking['client_phone']}
-"
-        f"📋 {booking['service_name']} · R$ {booking['price']}
-"
-        f"📅 {date_br} às {booking['time']}
-"
-        f"💰 Sinal: R$ {booking['deposit']}
-"
-        f"🔑 Código: {booking['code']}
+👤 {booking['client_name']}
+📱 {booking['client_phone']}
+📋 {booking['service_name']} · R$ {booking['price']}
+📅 {date_br} às {booking['time']}
+💰 Sinal: R$ {booking['deposit']}
+🔑 Código: {booking['code']}
 
-"
-        "Abra o painel do gestor para aprovar ou não aprovar."
-    )
+Abra o painel do gestor para aprovar ou não aprovar."""
     if mime.startswith("image/"):
         await bot_send_image(OWNER_WA, owner_msg, data_base64, mime)
     else:
@@ -834,38 +818,24 @@ async def store_proof_for_review(booking: dict, data_base64: str, mime: str, sou
 async def notify_proof_review_result(booking: dict, approved: bool) -> bool:
     date_br = fmt_date_br(booking["date"])
     if approved:
-        message = (
-            "✅ *Pagamento aprovado!*
+        message = f"""✅ *Pagamento aprovado!*
 
-"
-            "Seu comprovante foi aprovado e seu horário no *Araújo Deluxe* está *CONFIRMADO* ✨
+Seu comprovante foi aprovado e seu horário no *Araújo Deluxe* está *CONFIRMADO* ✨
 
-"
-            f"📋 {booking['service_name']}
-"
-            f"📅 {date_br} às {booking['time']}
-"
-            f"🔑 Código: {booking['code']}
+📋 {booking['service_name']}
+📅 {date_br} às {booking['time']}
+🔑 Código: {booking['code']}
 
-"
-            "Te esperamos! 💛"
-        )
+Te esperamos! 💛"""
     else:
-        message = (
-            "❌ *Comprovante não aprovado*
+        message = f"""❌ *Comprovante não aprovado*
 
-"
-            "Não conseguimos aprovar o comprovante enviado. Seu horário ainda não está confirmado.
-"
-            "Por favor, confira o pagamento e envie um novo comprovante pelo site ou aqui no WhatsApp. 💛
+Não conseguimos aprovar o comprovante enviado. Seu horário ainda não está confirmado.
+Por favor, confira o pagamento e envie um novo comprovante pelo site ou aqui no WhatsApp. 💛
 
-"
-            f"📋 {booking['service_name']}
-"
-            f"📅 {date_br} às {booking['time']}
-"
-            f"🔑 Código: {booking['code']}"
-        )
+📋 {booking['service_name']}
+📅 {date_br} às {booking['time']}
+🔑 Código: {booking['code']}"""
     return await bot_send_text(booking["client_phone"], message, transactional=True)
 
 
