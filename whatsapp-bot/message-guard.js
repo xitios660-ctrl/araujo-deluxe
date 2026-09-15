@@ -31,7 +31,13 @@ class MessageGuard {
       }
       for (const [key, time] of this.sent) if (now - time >= 3600000) this.sent.delete(key);
       const times = this.counts.get(contact) || [];
-      if (this.global.length >= 15 || times.length >= 6) throw new Error("Limite de mensagens atingido");
+      // Replies tied to a concrete incoming message carry a dedupeKey. They are
+      // user-initiated conversation replies and must never be cut off mid-flow
+      // by the outbound anti-spam ceiling. Unsolicited/system sends still obey
+      // the global and per-contact limits below.
+      if (!dedupeKey && (this.global.length >= 15 || times.length >= 6)) {
+        throw new Error("Limite de mensagens atingido");
+      }
 
       const hash = dedupeKey
         ? createHash("sha256").update(contact).update(":").update(String(dedupeKey)).digest("hex")
