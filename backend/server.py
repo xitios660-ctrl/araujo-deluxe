@@ -2072,7 +2072,7 @@ async def wa_find_bookings(phone: str, only_pending: bool = False) -> List[dict]
     return await db.bookings.find(query, {"_id": 0}).sort("created_at", -1).to_list(50)
 
 
-def wa_booking_status_labeldef wa_booking_status_label(booking: dict) -> str:
+def wa_booking_status_label(booking: dict) -> str:
     if booking.get("status") == "cancelada":
         return "cancelado"
     if booking.get("status") == "concluida":
