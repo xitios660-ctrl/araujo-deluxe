@@ -480,6 +480,39 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
         result, _ = await self.call("menu:site")
         self.assertIn("araujo-deluxe-studio.onrender.com", result["reply"])
 
+    async def test_recent_service_from_other_category_does_not_hijack_new_topic(self):
+        memory = {
+            "last_service_id": "glamour",
+            "last_service_at": server.datetime.now(server.timezone.utc).isoformat(),
+            "last_outgoing_text": "Falamos de Volume Glamour",
+            "history": [],
+            "message_count": 3,
+        }
+        result, _ = await self.call(
+            "quanto custa?",
+            state="book_service",
+            sdata={"category": "unhas"},
+            memory=memory,
+        )
+        self.assertNotIn("volume glamour", result["reply"].lower())
+        self.assertIn("serviço", result["reply"].lower())
+
+    async def test_whatsapp_profile_name_is_weaker_than_explicit_saved_name(self):
+        fake = MagicMock()
+        fake.wa_memories.update_one = AsyncMock()
+        with patch.object(server, "db", fake):
+            await server.wa_remember_message(
+                "5511999999999",
+                "user",
+                "oi",
+                push_name="Apelido do WhatsApp",
+                booking_name=None,
+            )
+        calls = fake.wa_memories.update_one.await_args_list
+        self.assertEqual(len(calls), 2)
+        weak_query = calls[1].args[0]
+        self.assertIn("$or", weak_query)
+
     async def test_followup_price_uses_remembered_service(self):
         memory = {
             "last_service_id": "glamour",

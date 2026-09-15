@@ -1544,9 +1544,10 @@ async def wa_remember_message(
     else:
         set_values["last_outgoing_text"] = remembered_text
 
-    remembered_name = wa_clean_name(booking_name) or wa_clean_name(push_name)
-    if remembered_name:
-        set_values["name"] = remembered_name
+    explicit_name = wa_clean_name(booking_name)
+    profile_name = wa_clean_name(push_name)
+    if explicit_name:
+        set_values["name"] = explicit_name
     if service_id in SERVICES_BY_ID:
         set_values["last_service_id"] = service_id
         set_values["last_service_at"] = now
@@ -1561,6 +1562,11 @@ async def wa_remember_message(
         },
         upsert=True,
     )
+    if profile_name and not explicit_name:
+        await db.wa_memories.update_one(
+            {"_id": phone, "$or": [{"name": {"$exists": False}}, {"name": ""}]},
+            {"$set": {"name": profile_name}},
+        )
 
 
 def wa_recent_user_messages(memory: Optional[dict], limit: int = 3) -> List[str]:
@@ -1883,7 +1889,11 @@ def wa_service_from_context(text: str, memory: Optional[dict], sdata: Optional[d
     sdata = sdata or {}
     if sdata.get("service_id") in SERVICES_BY_ID:
         return SERVICES_BY_ID[sdata["service_id"]]
-    return wa_recent_memory_service(memory)
+    remembered = wa_recent_memory_service(memory)
+    active_category = sdata.get("category")
+    if remembered and active_category in CATEGORY_KEYS and remembered.get("category") != active_category:
+        return None
+    return remembered
 
 
 def wa_services_for_category(category: str, include_maintenance: bool = False) -> List[dict]:
