@@ -364,5 +364,126 @@ class IntentPriorityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("domingo", result["reply"].lower())
         self.assertIn("fechado", result["reply"].lower())
 
+
+
+class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
+    def fake_db(self, state="menu", sdata=None, memory=None, bookings=None):
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value=memory or {"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={"state": state, "data": sdata or {}})
+        fake.wa_sessions.update_one = AsyncMock()
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=bookings or [])
+        return fake
+
+    async def call(self, text, state="menu", sdata=None, memory=None):
+        fake = self.fake_db(state=state, sdata=sdata, memory=memory)
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text=text, push_name="Cliente"),
+                auth={"test": True},
+            )
+        return result, fake
+
+    async def test_site_can_be_requested_naturally(self):
+        result, _ = await self.call("manda o site para eu reservar")
+        self.assertIn("araujo-deluxe-studio.onrender.com", result["reply"])
+        self.assertIn("site oficial", result["reply"].lower())
+
+    async def test_menu_has_site_option(self):
+        result, _ = await self.call("menu")
+        self.assertTrue(any(
+            row["id"] == "menu:site"
+            for section in result["ui"]["sections"]
+            for row in section["rows"]
+        ))
+
+    async def test_site_interactive_option_returns_link(self):
+        result, _ = await self.call("menu:site")
+        self.assertIn("araujo-deluxe-studio.onrender.com", result["reply"])
+
+    async def test_followup_price_uses_remembered_service(self):
+        memory = {
+            "last_service_id": "glamour",
+            "last_outgoing_text": "Se você gostar, eu já vejo um horário.",
+            "history": [],
+            "message_count": 3,
+        }
+        result, _ = await self.call("e quanto ele custa?", memory=memory)
+        reply = result["reply"].lower()
+        self.assertIn("volume glamour", reply)
+        self.assertIn("r$ 140", reply)
+
+    async def test_followup_deposit_uses_remembered_service(self):
+        memory = {
+            "last_service_id": "brasileiro",
+            "last_outgoing_text": "Volume Brasileiro fica R$ 100.",
+            "history": [],
+            "message_count": 3,
+        }
+        result, _ = await self.call("e o sinal?", memory=memory)
+        self.assertIn("r$ 50", result["reply"].lower())
+        self.assertIn("volume brasileiro", result["reply"].lower())
+
+    async def test_yes_after_recommendation_continues_booking(self):
+        memory = {
+            "last_service_id": "brasileiro",
+            "last_outgoing_text": "Pelo que você me falou eu iria de Volume Brasileiro. Se você gostar, eu já vejo um horário.",
+            "history": [],
+            "message_count": 3,
+        }
+        result, fake = await self.call("sim", memory=memory)
+        self.assertIn("qual dia", result["reply"].lower())
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "book_date")
+        self.assertEqual(update["data"]["service_id"], "brasileiro")
+
+    async def test_comparison_between_services_is_natural(self):
+        result, _ = await self.call("qual a diferença entre brasileiro e glamour?")
+        reply = result["reply"].lower()
+        self.assertIn("volume brasileiro", reply)
+        self.assertIn("volume glamour", reply)
+        self.assertIn("r$ 100", reply)
+        self.assertIn("r$ 140", reply)
+
+    async def test_too_expensive_offers_same_category_alternatives(self):
+        memory = {
+            "last_service_id": "fox",
+            "last_outgoing_text": "Fox Eyes fica R$ 150",
+            "history": [],
+            "message_count": 3,
+        }
+        result, _ = await self.call("ta caro kkk", memory=memory)
+        reply = result["reply"].lower()
+        self.assertIn("economizar", reply)
+        self.assertIn("volume brasileiro", reply)
+        self.assertNotIn("manutenção", reply)
+
+    async def test_uncertain_lashes_asks_effect_not_menu_reset(self):
+        result, _ = await self.call("quero cílios mas não sei qual escolher")
+        reply = result["reply"].lower()
+        self.assertIn("natural", reply)
+        self.assertIn("alongado", reply)
+        self.assertIn("mais cheio", reply)
+
+    async def test_unknown_question_during_booking_keeps_context(self):
+        memory = {
+            "last_service_id": "brasileiro",
+            "history": [],
+            "message_count": 2,
+        }
+        result, fake = await self.call(
+            "e quanto tempo demora?",
+            state="book_date",
+            sdata={"service_id": "brasileiro"},
+            memory=memory,
+        )
+        self.assertIn("2h", result["reply"])
+        self.assertIn("não perdi", result["reply"].lower())
+        fake.wa_sessions.update_one.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()
