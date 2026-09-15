@@ -6,6 +6,7 @@ services:
     rootDir: .
     buildCommand: bash backend/build-frontend.sh
     startCommand: uvicorn frontend_server:app --app-dir backend --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"

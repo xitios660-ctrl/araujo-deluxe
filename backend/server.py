@@ -366,7 +366,29 @@ async def root():
 
 @api_router.get("/health")
 async def health():
-    return {"ok": True, "service": "araujo-deluxe-api"}
+    database_ok = False
+    try:
+        await db.command("ping")
+        database_ok = True
+    except Exception:
+        pass
+
+    whatsapp = {"connected": False, "has_qr": False, "offline": True}
+    try:
+        async with httpx.AsyncClient(timeout=4) as c:
+            response = await c.get(f"{BOT_URL}/status", headers=BOT_HEADERS)
+            if response.status_code == 200:
+                data = response.json()
+                whatsapp = {
+                    "connected": bool(data.get("connected")),
+                    "has_qr": bool(data.get("has_qr")),
+                    "offline": bool(data.get("offline", not data.get("connected"))),
+                }
+    except Exception:
+        pass
+
+    payload = {"ok": database_ok, "service": "araujo-deluxe-api", "database": database_ok, "whatsapp": whatsapp}
+    return JSONResponse(status_code=200 if database_ok else 503, content=payload)
 
 
 @api_router.get("/services")

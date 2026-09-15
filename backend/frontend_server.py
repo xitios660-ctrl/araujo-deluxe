@@ -39,7 +39,17 @@ HOP_BY_HOP = {
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "frontend": True}
+    backend = {"ok": False, "database": False, "whatsapp": {"connected": False}}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.get(f"{BACKEND_ORIGIN}/api/health")
+            if response.headers.get("content-type", "").startswith("application/json"):
+                backend = response.json()
+            backend_ok = response.status_code == 200 and bool(backend.get("ok"))
+    except Exception:
+        backend_ok = False
+    payload = {"ok": backend_ok, "frontend": True, "backend": backend}
+    return JSONResponse(status_code=200 if backend_ok else 503, content=payload)
 
 
 @app.api_route("/api", methods=METHODS)

@@ -1,4 +1,4 @@
-name: Keep Araújo Deluxe backend awake
+name: Keep Araújo Deluxe site and bot awake
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Ping backend health
+      - name: Ping public site health
         run: |
           set -e
           curl --fail --silent --show-error --max-time 60 \

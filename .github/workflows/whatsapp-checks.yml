@@ -37,9 +37,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22.16.0"
       - run: yarn install --frozen-lockfile
       - run: yarn build
         env:
           CI: "false"
-          REACT_APP_BACKEND_URL: ${{ vars.REACT_APP_BACKEND_URL }}
+          DISABLE_ESLINT_PLUGIN: "true"
+          REACT_APP_BACKEND_URL: ""
