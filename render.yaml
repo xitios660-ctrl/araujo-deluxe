@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: dente-de-cobra-api
+    name: araujo-deluxe
     runtime: python
     plan: free
     rootDir: .
