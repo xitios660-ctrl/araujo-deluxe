@@ -331,6 +331,12 @@ async function handleMessage(msg) {
       if (introduced.size >= 10000) introduced.clear();
       introduced.add(phone);
     }
+  } catch (e) {
+    console.error("Falha no processamento da conversa:", e.message);
+    const fallback = "Tive um probleminha para processar sua mensagem agora 😅 Pode me mandar de novo em alguns segundos?";
+    await safeSend(phone, jid, { text: fallback }, (msg.key.id || crypto.randomUUID()) + ":error").catch(sendError => {
+      console.error("Falha também ao enviar resposta de contingência:", sendError.message);
+    });
   } finally {
     if (showTyping) await current.sendPresenceUpdate("paused", jid).catch(() => {});
   }

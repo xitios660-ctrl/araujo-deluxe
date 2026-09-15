@@ -3394,7 +3394,11 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
                     f"🔑 Código: {booking['code']}"
                 )
             }
-        await store_proof_for_review(booking, data.image_base64, data.image_mime or "image/jpeg", "whatsapp", notify_client=False)
+        try:
+            await store_proof_for_review(booking, data.image_base64, data.image_mime or "image/jpeg", "whatsapp", notify_client=False)
+        except HTTPException as exc:
+            detail = str(exc.detail) if isinstance(exc.detail, str) else "Não consegui aceitar esse comprovante."
+            return {"reply": f"Não consegui receber esse comprovante 😅 {detail}"}
         await set_state("menu")
         return {
             "reply": (
