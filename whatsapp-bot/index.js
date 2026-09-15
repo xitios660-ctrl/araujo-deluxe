@@ -3,7 +3,12 @@ const pino = require("pino");
 const crypto = require("node:crypto");
 const { MessageGuard } = require("./message-guard");
 const { usePersistentAuth } = require("./session-store");
+const { ContactQueue } = require("./contact-queue");
 const guard = new MessageGuard();
+const incomingQueue = new ContactQueue({
+  warnAt: 50,
+  onWarn: () => console.warn("Fila de atendimento acima de 50 mensagens; processando sem descartar."),
+});
 const introduced = new Set();
 const secret = process.env.WHATSAPP_INTERNAL_TOKEN || process.env.JWT_SECRET;
 if (!secret) throw new Error("Segredo interno do bot ausente");
@@ -16,7 +21,6 @@ let baileys, downloadMediaMessage;
 let sock = null, auth = null, lastQR = null, connected = false, starting = false;
 let timer = null, heartbeat = null, attempts = 0, closing = false, hasLease = false;
 let halted = null, lastLeaseSuccess = 0, leaseRenewing = null;
-let incomingTail = Promise.resolve(), incomingPending = 0;
 
 async function apiRequest(path, method = "GET", body) {
   const response = await fetch(BACKEND + "/api" + path, {
@@ -127,11 +131,11 @@ async function start() {
     current.ev.on("messages.upsert", ({ messages, type }) => {
       if (type !== "notify" || closing) return;
       for (const msg of messages) {
-        incomingPending++;
-        if (incomingPending === 50) console.warn("Fila de atendimento acima de 50 mensagens; processando sem descartar.");
-        incomingTail = incomingTail.then(() => handleMessage(msg))
-          .catch(e => console.error("Falha no atendimento:", e.message))
-          .finally(() => { incomingPending--; });
+        const jid = msg.key?.remoteJid || "unknown";
+        const alt = msg.key?.remoteJidAlt || msg.key?.senderPn || msg.key?.participantAlt || "";
+        const queueKey = jid.endsWith("@lid") && alt ? alt : jid;
+        incomingQueue.enqueue(queueKey, () => handleMessage(msg))
+          .catch(e => console.error("Falha no atendimento:", e.message));
       }
     });
   } catch (e) {
@@ -350,8 +354,15 @@ app.use(express.json({ limit: "25mb" }));
 app.get("/status", (req, res) => res.json({
   connected, has_qr: !!lastQR, user: sock?.user || null,
   session_storage: "encrypted_database", halted,
-  protections: { enabled: true, pending: guard.pending, paused: Date.now() < guard.pausedUntil,
-    per_minute: 15, per_contact_per_minute: 6 },
+  protections: {
+    enabled: true,
+    pending: guard.pending,
+    incoming_pending: incomingQueue.pending,
+    active_conversations: incomingQueue.size(),
+    paused: Date.now() < guard.pausedUntil,
+    per_minute: 15,
+    per_contact_per_minute: 6,
+  },
 }));
 app.get("/qr", (req, res) => res.json({ qr: lastQR }));
 app.post("/send", async (req, res) => {

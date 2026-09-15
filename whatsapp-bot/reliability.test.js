@@ -87,3 +87,53 @@ test("opt-out and circuit breaker prevent delivery", async () => {
   for (let i=0; i<3; i++) await assert.rejects(g.send("b", i, async () => { throw Error("network"); }));
   await assert.rejects(g.send("c", "next", async () => assert.fail()), /pausados/);
 });
+
+const { ContactQueue } = require("./contact-queue");
+
+test("incoming messages stay ordered per contact", async () => {
+  const queue = new ContactQueue();
+  const events = [];
+  const first = queue.enqueue("a", async () => {
+    events.push("a1-start");
+    await new Promise(resolve => setTimeout(resolve, 20));
+    events.push("a1-end");
+  });
+  const second = queue.enqueue("a", async () => {
+    events.push("a2");
+  });
+  await Promise.all([first, second]);
+  assert.deepEqual(events, ["a1-start", "a1-end", "a2"]);
+  assert.equal(queue.pending, 0);
+  assert.equal(queue.size(), 0);
+});
+
+test("different contacts can be processed concurrently", async () => {
+  const queue = new ContactQueue();
+  let release;
+  const blocker = new Promise(resolve => { release = resolve; });
+  let bStarted = false;
+
+  const a = queue.enqueue("a", async () => {
+    await blocker;
+  });
+  const b = queue.enqueue("b", async () => {
+    bStarted = true;
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(bStarted, true);
+  release();
+  await Promise.all([a, b]);
+});
+
+test("one contact failure does not poison later messages", async () => {
+  const queue = new ContactQueue();
+  await assert.rejects(queue.enqueue("a", async () => {
+    throw new Error("boom");
+  }));
+  let ran = false;
+  await queue.enqueue("a", async () => {
+    ran = true;
+  });
+  assert.equal(ran, true);
+});
