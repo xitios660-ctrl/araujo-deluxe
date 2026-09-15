@@ -89,6 +89,26 @@ class PaymentFlowTests(unittest.IsolatedAsyncioTestCase):
         query = fake.bookings.update_one.await_args.args[0]
         self.assertEqual(query["proof_status"], "em_analise")
 
+    async def test_payment_amount_uses_pending_booking_not_guess(self):
+        b = booking()
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={"state": "menu", "data": {}})
+        fake.wa_sessions.update_one = AsyncMock()
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=[b])
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="quanto tenho que pagar?", push_name="Cliente"),
+                auth={"test": True},
+            )
+        reply = result["reply"].lower()
+        self.assertIn("r$ 100", reply)
+        self.assertIn("r$ 50", reply)
+        self.assertIn("ad-test12", reply)
+
     async def test_paid_message_never_self_confirms(self):
         b = {**booking(), "proof_status": None}
         fake = MagicMock()

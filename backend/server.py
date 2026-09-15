@@ -3005,6 +3005,30 @@ async def wa_priority_action(
         lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(active, 1))
         return wa_reply("Qual destes você quer remarcar?\n\n" + lines + "\n\nResponda com o *número* ou código.")
 
+    asks_payment_amount = any(p in t for p in (
+        "quanto tenho que pagar",
+        "quanto eu tenho que pagar",
+        "quanto preciso pagar",
+        "quanto eu pago",
+        "qual valor do sinal",
+        "qual o valor do sinal",
+        "quanto e o sinal da reserva",
+        "quanto é o sinal da reserva",
+    ))
+    if asks_payment_amount:
+        pending = await wa_find_bookings(phone, only_pending=True)
+        if len(pending) == 1:
+            booking = pending[0]
+            return wa_reply(
+                f"Para a reserva *{booking['code']}*, o total do procedimento é *R$ {booking['price']}* "
+                f"e o sinal para confirmar é *R$ {booking['deposit']}*. 💛"
+            )
+        if len(pending) > 1:
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(pending[:5], 1))
+            return wa_reply(
+                "Você tem mais de uma reserva pendente. Me diga qual delas para eu passar o valor certo:\n\n" + lines
+            )
+
     payment_claim = any(p in t for p in (
         "ja paguei", "paguei", "fiz o pix", "acabei de pagar", "transferi",
         "mandei o pix", "pagamento feito",
@@ -3415,7 +3439,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         )
 
     if state == "book_name":
-        clean_booking_name = wa_clean_name(text)
+        clean_booking_name = explicit_name or wa_clean_name(text)
         name_words = (clean_booking_name or "").split()
         if (
             not clean_booking_name

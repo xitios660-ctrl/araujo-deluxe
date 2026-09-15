@@ -507,6 +507,32 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("alongado", reply)
         self.assertIn("mais cheio", reply)
 
+    async def test_natural_name_phrase_finishes_booking_step(self):
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={
+            "state": "book_name",
+            "data": {"service_id": "brasileiro", "date": "2026-09-20", "time": "15:30"},
+        })
+        fake.wa_sessions.update_one = AsyncMock()
+        booking = {
+            "id": "b1", "code": "AD-TEST123456", "service_id": "brasileiro",
+            "service_name": "Volume Brasileiro", "category": "cilios", "price": 100,
+            "deposit": 50, "date": "2026-09-20", "time": "15:30",
+            "client_name": "Ana Silva", "client_phone": "5511999999999",
+            "status": "pendente",
+        }
+        with patch.object(server, "db", fake), patch.object(server, "wa_create_booking", AsyncMock(return_value=booking)):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Meu nome é Ana Silva", push_name="Ana"),
+                auth={"test": True},
+            )
+        self.assertIn("reserva criada", result["reply"].lower())
+        self.assertIn("ana silva", fake.wa_memories.update_one.await_args_list[-1].args[1]["$set"].get("name", "").lower())
+
     async def test_unknown_question_during_booking_keeps_context(self):
         memory = {
             "last_service_id": "brasileiro",
