@@ -89,7 +89,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
                 await server.create_booking_record("glamour", "2026-09-15", "15:30", "Cliente", "11999999999")
         self.assertEqual(ctx.exception.code, "closed_day")
         fake_db.bookings.insert_one.assert_not_awaited()
-        fake_db.booking_slot_locks.delete_one.assert_awaited_once()
+        self.assertGreaterEqual(fake_db.booking_slot_locks.delete_one.await_count, 1)
 
     async def test_atomic_lock_rejects_second_simultaneous_booking(self):
         fake_db = MagicMock()

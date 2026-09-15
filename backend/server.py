@@ -231,10 +231,15 @@ def time_to_minutes(time_str: str) -> int:
 
 def duration_to_minutes(value: str) -> int:
     normalized = unicodedata.normalize("NFKD", (value or "").lower())
-    t = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    t = "".join(ch for ch in normalized if not unicodedata.combining(ch)).strip()
     hours = re.search(r"(\d+)\s*h", t)
     minutes = re.search(r"(\d+)\s*min", t)
-    total = (int(hours.group(1)) * 60 if hours else 0) + (int(minutes.group(1)) if minutes else 0)
+    compact_minutes = re.search(r"\d+\s*h\s*(\d{1,2})\b", t)
+    total = (int(hours.group(1)) * 60 if hours else 0)
+    if minutes:
+        total += int(minutes.group(1))
+    elif compact_minutes:
+        total += int(compact_minutes.group(1))
     return total or 60
 
 
@@ -2069,7 +2074,8 @@ async def wa_find_bookings(phone: str, only_pending: bool = False) -> List[dict]
     query = {"client_phone_digits": digits}
     if only_pending:
         query["status"] = "pendente"
-    return await db.bookings.find(query, {"_id": 0}).sort("created_at", -1).to_list(50)
+    values = await db.bookings.find(query, {"_id": 0}).to_list(50)
+    return sorted(values, key=lambda b: b.get("created_at", ""), reverse=True)
 
 
 def wa_booking_status_label(booking: dict) -> str:
