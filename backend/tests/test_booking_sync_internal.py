@@ -225,6 +225,34 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_time["17:00"]["reason"], "ocupado")
         self.assertIsNone(by_time["17:00"]["booking"])
 
+    def test_public_booking_view_hides_private_fields(self):
+        source = {
+            "id": "b-public",
+            "code": "AD-PUBLIC1234",
+            "service_id": "glamour",
+            "service_name": "Volume Glamour",
+            "category": "cilios",
+            "price": 140,
+            "deposit": 50,
+            "duration": "2h30",
+            "date": "2026-09-19",
+            "time": "14:00",
+            "status": "pendente",
+            "payment_status": "em_analise",
+            "proof_status": "em_analise",
+            "client_name": "Nome Privado",
+            "client_phone": "5511999999999",
+            "client_phone_digits": "11999999999",
+            "notes": "observação privada",
+            "proof_id": "proof-secret",
+            "proof_reviewed_by": "admin-secret",
+        }
+        result = server.public_booking_view(source)
+        self.assertEqual(result["id"], "b-public")
+        self.assertEqual(result["proof_status"], "em_analise")
+        for key in ("client_name", "client_phone", "client_phone_digits", "notes", "proof_id", "proof_reviewed_by"):
+            self.assertNotIn(key, result)
+
     def test_phone_match_requires_full_number(self):
         self.assertTrue(server.phones_match("+55 11 99999-1234", "11999991234"))
         self.assertFalse(server.phones_match("99991234", "11999991234"))

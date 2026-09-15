@@ -459,7 +459,7 @@ async def create_booking_record(
         deposit = min(service["deposit"], service["price"])
         booking = {
             "id": booking_id,
-            "code": f"AD-{uuid.uuid4().hex[:6].upper()}",
+            "code": f"AD-{uuid.uuid4().hex[:10].upper()}",
             "service_id": service["id"],
             "service_name": service["name"],
             "category": service["category"],
@@ -580,6 +580,28 @@ async def create_booking(data: BookingCreate):
     return response
 
 
+PUBLIC_BOOKING_FIELDS = (
+    "id",
+    "code",
+    "service_id",
+    "service_name",
+    "category",
+    "price",
+    "deposit",
+    "duration",
+    "date",
+    "time",
+    "status",
+    "payment_status",
+    "proof_status",
+    "created_at",
+)
+
+
+def public_booking_view(booking: dict) -> dict:
+    return {key: booking.get(key) for key in PUBLIC_BOOKING_FIELDS if key in booking}
+
+
 @api_router.get("/bookings/lookup")
 async def lookup_bookings(q: str):
     q = q.strip()
@@ -587,11 +609,16 @@ async def lookup_bookings(q: str):
         raise HTTPException(status_code=400, detail="Informe o código completo ou seu telefone com DDD.")
     results = await db.bookings.find({"code": q.upper()}, {"_id": 0}).to_list(20)
     if results:
-        return sorted(results, key=lambda b: (b["date"], b["time"]), reverse=True)[:20]
+        ordered = sorted(results, key=lambda b: (b["date"], b["time"]), reverse=True)[:20]
+        return [public_booking_view(b) for b in ordered]
     digits = canonical_phone(q)
     if len(digits) < 10:
         raise HTTPException(status_code=400, detail="Informe o telefone completo com DDD.")
-    return await db.bookings.find({"client_phone_digits": digits}, {"_id": 0}).sort([("date", -1), ("time", -1)]).to_list(20)
+    results = await db.bookings.find(
+        {"client_phone_digits": digits},
+        {"_id": 0},
+    ).sort([("date", -1), ("time", -1)]).to_list(20)
+    return [public_booking_view(b) for b in results]
 
 
 @api_router.post("/bookings/{booking_id}/cancel")
