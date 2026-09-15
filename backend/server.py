@@ -79,8 +79,27 @@ SERVICES = [
 for service in SERVICES:
     service["deposit"] = min(service.get("deposit", 0), service.get("price", 0))
 
+def effective_deposit(service: dict) -> int:
+    price = max(0, int(service.get("price", 0) or 0))
+    configured = max(0, int(service.get("deposit", 0) or 0))
+    return min(configured, price)
+
+
+for _service in SERVICES:
+    _service["deposit"] = effective_deposit(_service)
+
 SERVICES_BY_ID = {s["id"]: s for s in SERVICES}
 BOOKING_STATUSES = ["pendente", "confirmada", "concluida", "cancelada"]
+
+ALLOWED_PROOF_MIMES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+    "application/pdf",
+}
+MAX_PROOF_BYTES = 8 * 1024 * 1024
 
 
 # ---------- PIX helpers ----------
@@ -548,16 +567,15 @@ async def create_booking(data: BookingCreate):
         status = 404 if exc.code == "service_not_found" else 409 if exc.code == "slot_taken" else 400
         raise HTTPException(status_code=status, detail=exc.detail)
 
-    service = SERVICES_BY_ID[booking["service_id"]]
     response = {**booking, "whatsapp": os.environ["WHATSAPP_NUMBER"], "payment": None}
-    if service["deposit"] > 0:
-        pix_code = build_pix(float(service["deposit"]), booking["code"].replace("-", ""))
+    if booking["deposit"] > 0:
+        pix_code = build_pix(float(booking["deposit"]), booking["code"].replace("-", ""))
         response["payment"] = {
             "method": "pix",
             "pix_key": os.environ["PIX_KEY"],
             "pix_code": pix_code,
             "qr_base64": pix_qr_base64(pix_code),
-            "amount": service["deposit"],
+            "amount": booking["deposit"],
         }
     return response
 
@@ -934,7 +952,38 @@ async def bot_send_image(phone: str, caption: str, base64_data: str, mimetype: s
         return False
 
 
+def validate_proof_payload(data_base64: str, mime: str) -> str:
+    normalized_mime = (mime or "").split(";", 1)[0].strip().lower()
+    if normalized_mime not in ALLOWED_PROOF_MIMES:
+        raise HTTPException(status_code=400, detail="Formato de comprovante não suportado. Envie JPG, PNG, WEBP, HEIC ou PDF.")
+    if not data_base64 or len(data_base64) > 12_000_000:
+        raise HTTPException(status_code=400, detail="Arquivo inválido ou muito grande. Envie até 8MB.")
+    try:
+        raw = base64.b64decode(data_base64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Arquivo inválido. Tente enviar o comprovante novamente.")
+    if not raw or len(raw) > MAX_PROOF_BYTES:
+        raise HTTPException(status_code=400, detail="Arquivo inválido ou muito grande. Envie até 8MB.")
+
+    signatures_ok = True
+    if normalized_mime == "application/pdf":
+        signatures_ok = raw.startswith(b"%PDF")
+    elif normalized_mime == "image/jpeg":
+        signatures_ok = raw.startswith(b"\xff\xd8\xff")
+    elif normalized_mime == "image/png":
+        signatures_ok = raw.startswith(b"\x89PNG\r\n\x1a\n")
+    elif normalized_mime == "image/webp":
+        signatures_ok = len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+    elif normalized_mime in {"image/heic", "image/heif"}:
+        signatures_ok = len(raw) >= 12 and raw[4:8] == b"ftyp"
+
+    if not signatures_ok:
+        raise HTTPException(status_code=400, detail="O conteúdo do arquivo não corresponde ao formato informado.")
+    return normalized_mime
+
+
 async def store_proof_for_review(booking: dict, data_base64: str, mime: str, source: str, notify_client: bool = True) -> str:
+    mime = validate_proof_payload(data_base64, mime)
     now = datetime.now(timezone.utc).isoformat()
     proof = {
         "id": str(uuid.uuid4()),
@@ -1050,9 +1099,6 @@ async def upload_proof(booking_id: str, data: ProofUpload):
             "proof_status": "em_analise",
             "proof_id": booking["proof_id"],
         }
-
-    if len(data.data_base64) > 11_000_000:
-        raise HTTPException(status_code=400, detail="Arquivo muito grande. Envie até 8MB.")
 
     proof_id = await store_proof_for_review(booking, data.data_base64, data.mime, "site")
     return {"ok": True, "status": "pendente", "proof_status": "em_analise", "proof_id": proof_id}

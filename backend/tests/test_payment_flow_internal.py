@@ -1,4 +1,5 @@
 import os
+import base64
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,6 +39,22 @@ def booking():
 
 
 class PaymentFlowTests(unittest.IsolatedAsyncioTestCase):
+    def proof_b64(self):
+        return base64.b64encode(b"\xff\xd8\xff\xe0receipt-test").decode()
+
+    async def test_proof_payload_rejects_unsupported_or_forged_files(self):
+        with self.assertRaises(server.HTTPException) as unsupported:
+            server.validate_proof_payload(self.proof_b64(), "text/html")
+        self.assertEqual(unsupported.exception.status_code, 400)
+
+        forged = base64.b64encode(b"not-a-jpeg").decode()
+        with self.assertRaises(server.HTTPException) as mismatch:
+            server.validate_proof_payload(forged, "image/jpeg")
+        self.assertEqual(mismatch.exception.status_code, 400)
+
+    def test_proof_payload_accepts_supported_image(self):
+        self.assertEqual(server.validate_proof_payload(self.proof_b64(), "image/jpeg"), "image/jpeg")
+
     async def test_duplicate_proof_upload_keeps_single_current_proof(self):
         b = booking()
         fake = MagicMock()
@@ -50,7 +67,7 @@ class PaymentFlowTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(server, "db", fake), \
              patch.object(server, "bot_send_text", AsyncMock()), \
              patch.object(server, "bot_send_image", AsyncMock()):
-            proof_id = await server.store_proof_for_review(b, "abc", "image/jpeg", "site")
+            proof_id = await server.store_proof_for_review(b, self.proof_b64(), "image/jpeg", "site")
         self.assertEqual(proof_id, "existing-proof")
         fake.proofs.delete_one.assert_awaited_once()
 

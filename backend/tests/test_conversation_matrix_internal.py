@@ -144,10 +144,10 @@ class NaturalLanguageMatrixTests(unittest.TestCase):
                 self.assertEqual(server.duration_to_minutes(value), expected)
 
     def test_service_deposit_never_exceeds_price_for_new_booking(self):
-        # Booking creation clamps the configured deposit to the service price.
         for service in server.SERVICES:
             with self.subTest(service=service["id"]):
-                self.assertLessEqual(min(service["deposit"], service["price"]), service["price"])
+                self.assertGreaterEqual(service["deposit"], 0)
+                self.assertLessEqual(service["deposit"], service["price"])
 
     def test_recommendation_signals(self):
         cases = {
