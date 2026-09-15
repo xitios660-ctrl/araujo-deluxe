@@ -1873,6 +1873,66 @@ async def wa_conversation_action(
     return None
 
 
+async def wa_select_service_for_booking(service: dict, sdata: dict, phone: str, set_state) -> dict:
+    await wa_update_memory_profile(phone, service_id=service["id"])
+    held_date = sdata.get("date")
+    held_time = sdata.get("time")
+    daypart = sdata.get("daypart")
+
+    if held_date:
+        day = await get_day_availability(held_date, service_id=service["id"])
+        if not day["scheduled_open"] or not day["open"]:
+            await set_state("book_date", {"service_id": service["id"], "daypart": daypart})
+            return wa_reply(
+                f"Esse dia não está disponível para *{service['name']}* 😔 Me fala outra data que eu consulto."
+            )
+
+        available = [slot["time"] for slot in day["slots"] if slot["available"]]
+        available = filter_slots_by_daypart(available, daypart)
+        if held_time:
+            if held_time in available:
+                await set_state("book_name", {
+                    "service_id": service["id"],
+                    "date": held_date,
+                    "time": held_time,
+                    "daypart": daypart,
+                })
+                return wa_reply(
+                    f"Fechado 💛 *{service['name']}* em *{fmt_date_br(held_date)} às {held_time}*. "
+                    "Agora me manda seu *nome e sobrenome* para confirmar a reserva."
+                )
+            if not available:
+                await set_state("book_date", {"service_id": service["id"], "daypart": daypart})
+                return wa_reply(
+                    f"Para *{service['name']}* não tenho outro horário que encaixe em {fmt_date_br(held_date)} 😔 "
+                    "Qual outro dia fica bom?"
+                )
+
+        if available:
+            await set_state("book_time", {
+                "service_id": service["id"],
+                "date": held_date,
+                "slots": available,
+                "daypart": daypart,
+            })
+            period = " nesse período" if daypart else ""
+            return wa_reply(
+                f"Perfeito 💛 Para *{service['name']}* em *{fmt_date_br(held_date)}*{period}, tenho: "
+                + ", ".join(available)
+                + ". Qual você prefere?",
+                wa_slots_ui(held_date, available),
+            )
+
+        await set_state("book_date", {"service_id": service["id"], "daypart": daypart})
+        return wa_reply(f"Não sobrou horário para *{service['name']}* nesse dia 😔 Qual outro dia você quer?")
+
+    await set_state("book_date", {"service_id": service["id"], "daypart": daypart})
+    return wa_reply(
+        f"Perfeito 💛 Vamos de *{service['name']}*. Qual dia você prefere? "
+        "Pode mandar *amanhã*, *sexta* ou *20/09*."
+    )
+
+
 async def wa_smart_action(
     text: str,
     state: str,
@@ -1949,6 +2009,9 @@ async def wa_smart_action(
             "Se você gostar, eu já vejo um horário.\n\n"
             + wa_site_cta("Se quiser reservar sem continuar a conversa")
         )
+
+    if service and state in {"book_category", "book_service"}:
+        return await wa_select_service_for_booking(service, sdata, phone, set_state)
 
     daypart = wa_daypart_from_text(text) or sdata.get("daypart")
     date_str = wa_date_from_sentence(text)
@@ -3014,6 +3077,9 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         }
 
     if state == "book_category":
+        direct_service = wa_service_from_text(text)
+        if direct_service:
+            return await wa_select_service_for_booking(direct_service, sdata, phone, set_state)
         if "cilio" in lower or "cílio" in lower:
             lower = "1"
         elif "unha" in lower:
@@ -3036,36 +3102,15 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
 
     if state == "book_service":
         cat_services = [s for s in SERVICES if s["category"] == sdata.get("category")]
+        direct_service = wa_service_from_text(text)
+        if direct_service and direct_service["category"] == sdata.get("category"):
+            return await wa_select_service_for_booking(direct_service, sdata, phone, set_state)
         named = [i for i, service in enumerate(cat_services, 1) if lower == service["name"].lower()]
         if len(named) == 1:
             lower = str(named[0])
         if lower.isdigit() and 1 <= int(lower) <= len(cat_services):
             service = cat_services[int(lower) - 1]
-            await wa_update_memory_profile(phone, service_id=service["id"])
-
-            held_date = sdata.get("date")
-            held_time = sdata.get("time")
-            if held_date and held_time:
-                day = await get_day_availability(held_date, service_id=service["id"])
-                current_available = [s["time"] for s in day["slots"] if s["available"]] if day["open"] else []
-                if held_time not in current_available:
-                    await set_state("book_date", {"service_id": service["id"]})
-                    return {
-                        "reply": f"😔 Enquanto você escolhia, *{held_time}* em {fmt_date_br(held_date)} deixou de ficar disponível. "
-                                 "Não vou marcar errado. Me diz outra data que eu consulto de novo."
-                    }
-                await set_state("book_name", {
-                    "service_id": service["id"],
-                    "date": held_date,
-                    "time": held_time,
-                })
-                return {
-                    "reply": f"Fechado 💛 *{service['name']}* em *{fmt_date_br(held_date)} às {held_time}*. "
-                             "Agora me manda seu *nome completo* para eu confirmar a reserva."
-                }
-
-            await set_state("book_date", {"service_id": service["id"]})
-            return {"reply": f"Ótima escolha! *{service['name']}* ✨\n\n📅 Para qual data?\nDigite *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*.\n\n_Atendemos de segunda a sábado._"}
+            return await wa_select_service_for_booking(service, sdata, phone, set_state)
         return wa_reply(
             "Não peguei qual serviço você quis 😅 Mas pode perguntar sobre qualquer um deles, comparar preços ou me dizer o efeito que você quer. "
             "Eu continuo daqui sem apagar o que você já escolheu.",
@@ -3085,15 +3130,16 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             return {"reply": f"🚫 O estúdio está *fechado* em {fmt_date_br(ds)} ({day['weekday_name']}).\n{day['closed_reason'] or 'Escolha outra data.'}"}
         available = [s["time"] for s in day["slots"] if s["available"]]
         weekday = day["weekday_name"]
-        if not available:
-            return {"reply": f"😔 Todos os horários de *{fmt_date_br(ds)}* ({weekday}) já estão ocupados.\nTente outra data!"}
         if state == "avail_date":
-            await set_state("avail_pick", {"date": ds, "slots": available})
+            await set_state("book_category", {"date": ds})
             return wa_reply(
-                f"🕐 Em *{fmt_date_br(ds)}* ({weekday}) estão livres: "
-                + ", ".join(available)
-                + ". Qual você prefere?"
+                f"Consigo olhar *{fmt_date_br(ds)}* 💛 Qual procedimento você quer? "
+                "A duração muda os horários que realmente encaixam.",
+                wa_category_ui(),
             )
+        available = filter_slots_by_daypart(available, sdata.get("daypart"))
+        if not available:
+            return {"reply": f"😔 Não tenho horário livre para esse procedimento em *{fmt_date_br(ds)}* ({weekday}) nesse período. Tente outro período ou outra data!"}
         await set_state("book_time", {**sdata, "date": ds, "slots": available})
         return wa_reply(
             f"🕐 Horários livres em *{fmt_date_br(ds)}* ({weekday}). Escolhe um:",

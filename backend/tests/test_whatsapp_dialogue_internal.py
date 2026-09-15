@@ -528,5 +528,35 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("não tenho o endereço cadastrado", result["reply"].lower())
 
 
+
+
+    async def test_service_alias_keeps_previously_selected_date(self):
+        day = {
+            "date": "2026-09-16", "weekday_name": "Quarta-feira",
+            "scheduled_open": True, "open": True, "day_blocked": False,
+            "closed_reason": None,
+            "slots": [
+                {"time": "09:00", "available": True},
+                {"time": "15:30", "available": True},
+            ],
+        }
+        fake = self.fake_db(
+            state="book_service",
+            sdata={"category": "cilios", "date": "2026-09-16"},
+            memory={"history": [], "message_count": 1},
+        )
+        with patch.object(server, "db", fake), patch.object(server, "get_day_availability", AsyncMock(return_value=day)):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="brasileiro", push_name="Cliente"),
+                auth={"test": True},
+            )
+        self.assertIn("16/09/2026", result["reply"])
+        self.assertIn("15:30", result["reply"])
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "book_time")
+        self.assertEqual(update["data"]["service_id"], "brasileiro")
+        self.assertEqual(update["data"]["date"], "2026-09-16")
+
+
 if __name__ == "__main__":
     unittest.main()
