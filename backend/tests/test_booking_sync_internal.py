@@ -188,6 +188,35 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         fake.bookings.update_one.assert_not_awaited()
 
+    async def test_cancelling_booking_closes_pending_proof_consistently(self):
+        booking = {
+            "id": "b-proof-cancel",
+            "date": "2026-09-15",
+            "time": "15:30",
+            "client_phone": "11999999999",
+            "status": "pendente",
+            "service_name": "Volume Glamour",
+            "payment_status": "em_analise",
+            "proof_status": "em_analise",
+            "proof_id": "proof-1",
+        }
+        fake = MagicMock()
+        claimed = MagicMock()
+        claimed.matched_count = 1
+        fake.bookings.update_one = AsyncMock(return_value=claimed)
+        fake.proofs.update_one = AsyncMock()
+        release = AsyncMock()
+        with patch.object(server, "db", fake), patch.object(server, "release_booking_slot", release):
+            ok = await server.mark_booking_cancelled(booking, "test")
+        self.assertTrue(ok)
+        updates = fake.bookings.update_one.await_args.args[1]["$set"]
+        self.assertEqual(updates["status"], "cancelada")
+        self.assertEqual(updates["proof_status"], "cancelado")
+        self.assertEqual(updates["payment_status"], "cancelado")
+        proof_updates = fake.proofs.update_one.await_args.args[1]["$set"]
+        self.assertEqual(proof_updates["status"], "cancelado")
+        release.assert_awaited_once_with("2026-09-15", "15:30")
+
     async def test_cancel_releases_slot_for_site_and_whatsapp(self):
         booking = {
             "id": "b1", "date": "2026-09-15", "time": "15:30", "client_phone": "11999999999",

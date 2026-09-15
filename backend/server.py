@@ -621,6 +621,56 @@ async def lookup_bookings(q: str):
     return [public_booking_view(b) for b in results]
 
 
+async def mark_booking_cancelled(booking: dict, source: str, actor: Optional[str] = None) -> bool:
+    if booking.get("status") not in {"pendente", "confirmada"}:
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    updates = {
+        "status": "cancelada",
+        "cancelled_at": now,
+        "cancelled_source": source,
+    }
+    if actor:
+        updates["cancelled_by"] = actor
+
+    proof_in_review = booking.get("proof_id") and booking.get("proof_status") == "em_analise"
+    if proof_in_review:
+        updates.update({
+            "proof_status": "cancelado",
+            "proof_reviewed_at": now,
+            "proof_reviewed_by": actor or source,
+        })
+
+    if booking.get("payment_status") not in {"confirmado", "confirmado_manual", "nao_exigido"}:
+        updates["payment_status"] = "cancelado"
+
+    claimed = await db.bookings.update_one(
+        {"id": booking["id"], "status": {"$in": ["pendente", "confirmada"]}},
+        {"$set": updates},
+    )
+    if claimed.matched_count == 0:
+        return False
+
+    if proof_in_review:
+        await db.proofs.update_one(
+            {"id": booking["proof_id"], "status": "em_analise"},
+            {"$set": {
+                "status": "cancelado",
+                "reviewed_at": now,
+                "reviewed_by": actor or source,
+            }},
+        )
+
+    await release_booking_slot(booking["date"], booking["time"])
+    logging.getLogger(__name__).info(
+        "BOOKING_CANCELLED booking_id=%s source=%s",
+        booking["id"][:8],
+        source,
+    )
+    return True
+
+
 @api_router.post("/bookings/{booking_id}/cancel")
 async def cancel_booking(booking_id: str, data: CancelInput):
     booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
@@ -632,9 +682,10 @@ async def cancel_booking(booking_id: str, data: CancelInput):
         raise HTTPException(status_code=400, detail="Este agendamento não pode mais ser cancelado.")
     if slot_in_past(booking["date"], booking["time"]):
         raise HTTPException(status_code=400, detail="Não é possível cancelar um horário que já passou.")
-    await db.bookings.update_one({"id": booking_id}, {"$set": {"status": "cancelada"}})
-    await release_booking_slot(booking["date"], booking["time"])
-    return {**booking, "status": "cancelada"}
+    if not await mark_booking_cancelled(booking, "site"):
+        raise HTTPException(status_code=409, detail="Este agendamento acabou de ser alterado. Atualize a consulta e tente novamente.")
+    updated = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
+    return public_booking_view(updated or {**booking, "status": "cancelada"})
 
 
 @api_router.get("/studio-info")
@@ -734,6 +785,23 @@ async def update_booking(booking_id: str, data: StatusUpdate, user: dict = Depen
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
 
     old_status = booking.get("status")
+    if data.status == "cancelada":
+        if old_status == "cancelada":
+            return booking
+        if not await mark_booking_cancelled(booking, "admin", actor=user["id"]):
+            raise HTTPException(status_code=409, detail="O agendamento foi alterado por outra ação. Atualize e tente novamente.")
+        await bot_send_text(
+            booking["client_phone"],
+            (
+                "❌ *Agendamento cancelado pelo estúdio*\n\n"
+                f"{booking['service_name']} · {fmt_date_br(booking['date'])} às {booking['time']}\n"
+                f"🔑 Código: {booking['code']}\n\n"
+                "Se quiser remarcar, pode falar comigo por aqui. 💛"
+            ),
+            transactional=True,
+        )
+        return await db.bookings.find_one({"id": booking_id}, {"_id": 0})
+
     if data.status == "concluida" and old_status != "confirmada":
         raise HTTPException(status_code=409, detail="Confirme o agendamento antes de marcá-lo como concluído.")
     if data.status == "confirmada" and booking.get("proof_status") == "em_analise":
@@ -781,9 +849,6 @@ async def update_booking(booking_id: str, data: StatusUpdate, user: dict = Depen
     finally:
         if locked_slots:
             await release_booking_slot(booking["date"], booking["time"], locked_slots)
-
-    if data.status == "cancelada" and old_status != "cancelada":
-        logging.getLogger(__name__).info("BOOKING_CANCELLED booking_id=%s source=admin", booking_id[:8])
 
     if manual_payment_confirmation:
         logging.getLogger(__name__).info("PAYMENT_CONFIRMED booking_id=%s source=admin_manual", booking_id[:8])
@@ -2746,22 +2811,7 @@ async def wa_cancel_booking_record(booking: dict, source: str = "whatsapp") -> b
     except Exception:
         return False
 
-    now = datetime.now(timezone.utc).isoformat()
-    await db.bookings.update_one(
-        {"id": fresh["id"]},
-        {"$set": {
-            "status": "cancelada",
-            "cancelled_at": now,
-            "cancelled_source": source,
-        }},
-    )
-    if fresh.get("proof_id") and fresh.get("proof_status") == "em_analise":
-        await db.proofs.update_one(
-            {"id": fresh["proof_id"]},
-            {"$set": {"status": "cancelado", "reviewed_at": now, "reviewed_by": source}},
-        )
-    await release_booking_slot(fresh["date"], fresh["time"])
-    return True
+    return await mark_booking_cancelled(fresh, source)
 
 
 async def wa_move_booking(booking_id: str, new_date: str, new_time: str) -> dict:
