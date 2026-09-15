@@ -1924,7 +1924,7 @@ async def wa_select_service_for_booking(service: dict, sdata: dict, phone: str, 
                 })
                 return wa_reply(
                     f"Fechado 💛 *{service['name']}* em *{fmt_date_br(held_date)} às {held_time}*. "
-                    "Agora me manda seu *nome e sobrenome* para confirmar a reserva."
+                    "Agora me manda seu *nome completo* para confirmar a reserva."
                 )
             if not available:
                 await set_state("book_date", {"service_id": service["id"], "daypart": daypart})
@@ -2408,7 +2408,7 @@ def wa_is_cancel_intent(text: str) -> bool:
         "desmarcar", "desmarca", "desmarque",
         "nao vou conseguir ir", "nao vou poder ir", "nao posso ir",
         "nao consigo ir", "preciso cancelar", "quero cancelar",
-        "quero desmarcar", "tirar meu horario", "tirar meus horarios",
+        "quero desmarcar", "tirar meu horario", "tirar meus horarios", "tira meu horario", "tira meus horarios",
     )
     return any(p in t for p in phrases)
 

@@ -103,6 +103,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_cannot_close_day_with_active_booking(self):
         fake_db = MagicMock()
         fake_db.bookings.find_one = AsyncMock(return_value={"id": "b1", "time": "15:30"})
+        fake_db.bookings.find.return_value.to_list = AsyncMock(return_value=[{"id": "b1", "time": "15:30", "service_id": "glamour", "duration_minutes": 150, "status": "confirmada"}])
         fake_db.blocks.find_one = AsyncMock(return_value=None)
         fake_db.blocks.insert_one = AsyncMock()
         with patch.object(server, "db", fake_db):
