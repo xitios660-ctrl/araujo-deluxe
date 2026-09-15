@@ -40,9 +40,10 @@ async function storageRequest(method, body) {
   }
   throw error;
 }
-function schedule() {
+function schedule(delayOverride = null) {
   if (timer || closing || halted) return;
-  const delay = Math.min(300000, 5000 * 2 ** Math.min(attempts++, 6));
+  const forcedDelay = Number.isFinite(delayOverride) ? Math.max(1000, delayOverride) : null;
+  const delay = forcedDelay ?? Math.min(60000, 5000 * 2 ** Math.min(attempts++, 4));
   timer = setTimeout(() => { timer = null; start(); }, delay);
 }
 function disconnectTransport() {
@@ -82,7 +83,9 @@ async function renewLease({ initial = false } = {}) {
       hasLease = false;
       disconnectTransport();
       starting = false;
-      schedule();
+      // During a Render rolling deploy the old instance can still own the lease
+      // for a few seconds. Retry quickly instead of backing off for minutes.
+      schedule(e.code === "LEASE_TAKEN" ? 3000 : null);
       throw e;
     } finally {
       leaseRenewing = null;
@@ -90,6 +93,22 @@ async function renewLease({ initial = false } = {}) {
   })();
   return leaseRenewing;
 }
+function saveCredsWithRetry(current, attempt = 0) {
+  if (!auth || current !== sock || closing) return;
+  auth.saveCreds().catch((e) => {
+    if (current !== sock || closing) return;
+    if (attempt < 5) {
+      const delay = Math.min(15000, 1000 * 2 ** attempt);
+      console.warn("Falha temporária ao salvar sessão; mantendo conexão e tentando novamente:", e.message);
+      setTimeout(() => saveCredsWithRetry(current, attempt + 1), delay);
+      return;
+    }
+    // Do not tear down a healthy WhatsApp socket because Mongo/API had a
+    // temporary write problem. A later creds.update or restart will retry.
+    console.error("Não foi possível salvar a sessão após várias tentativas; conexão mantida:", e.message);
+  });
+}
+
 async function start() {
   if (starting || connected || closing || halted) return;
   starting = true;
@@ -106,26 +125,35 @@ async function start() {
     sock = current;
     heartbeat = setInterval(() => { renewLease().catch(() => {}); }, 15000);
     current.ev.on("creds.update", () => {
-      auth.saveCreds().catch((e) => {
-        console.error("Falha temporária ao salvar sessão:", e.message);
-        if (current !== sock || closing) return;
-        disconnectTransport();
-        starting = false;
-        schedule();
-      });
+      saveCredsWithRetry(current);
     });
     current.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
       if (current !== sock || closing) return;
-      if (qr) { lastQR = qr; connected = false; }
-      if (connection === "open") { connected = true; lastQR = null; attempts = 0; starting = false; }
+      if (qr) {
+        lastQR = qr;
+        connected = false;
+        console.log("QR Code do WhatsApp atualizado e pronto para leitura.");
+      }
+      if (connection === "open") {
+        connected = true;
+        lastQR = null;
+        attempts = 0;
+        starting = false;
+        halted = null;
+        console.log("WhatsApp conectado; sessão persistente ativa.");
+      }
       if (connection === "close") {
         const code = lastDisconnect?.error?.output?.statusCode;
+        console.warn("Conexão do WhatsApp fechada; código:", code ?? "desconhecido");
         disconnectTransport(); starting = false;
         const stopped = ["loggedOut", "forbidden", "connectionReplaced", "badSession"]
           .map(key => baileys.DisconnectReason[key]).filter(value => value !== undefined);
         if (stopped.includes(code)) {
-          halted = "Sessão encerrada ou recusada pelo WhatsApp. A reconexão automática foi pausada.";
-        } else schedule();
+          halted = "Sessão encerrada ou recusada pelo WhatsApp. Use 'Desconectar / trocar número' no painel para gerar um novo QR Code.";
+        } else {
+          // Network hiccups and WhatsApp restart requests should recover fast.
+          schedule(2000);
+        }
       }
     });
     current.ev.on("messages.upsert", ({ messages, type }) => {
@@ -359,6 +387,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "25mb" }));
 app.get("/status", (req, res) => res.json({
   connected, has_qr: !!lastQR, user: sock?.user || null,
+  reconnecting: !connected && !halted,
   session_storage: "encrypted_database", halted,
   protections: {
     enabled: true,
@@ -415,7 +444,10 @@ async function shutdown() {
   closing = true;
   clearTimeout(timer);
   disconnectTransport();
-  if (auth) await auth.flush().catch(() => {});
+  if (auth) {
+    await auth.saveCreds().catch(() => {});
+    await auth.flush().catch(() => {});
+  }
   await apiRequest("/internal/whatsapp/lease", "DELETE").catch(() => {});
   process.exit(0);
 }
