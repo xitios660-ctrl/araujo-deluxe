@@ -91,8 +91,11 @@ export const BookingSection = ({ preselected }) => {
     const d = format(date, "yyyy-MM-dd");
     setAvailability(null);
     setTime(null);
-    api.get(`/availability?date=${d}`).then((r) => setAvailability(r.data)).catch(() => toast.error("Erro ao consultar horários"));
-  }, [date]);
+    if (!service?.id) return;
+    api.get(`/availability?date=${d}&service_id=${encodeURIComponent(service.id)}`)
+      .then((r) => setAvailability(r.data))
+      .catch(() => toast.error("Erro ao consultar horários"));
+  }, [date, service?.id]);
 
   const grouped = useMemo(() => {
     const g = {};
@@ -120,7 +123,7 @@ export const BookingSection = ({ preselected }) => {
       toast.error(apiError(e));
       if (e?.response?.status === 409) {
         const d = format(date, "yyyy-MM-dd");
-        api.get(`/availability?date=${d}`).then((r) => setAvailability(r.data));
+        api.get(`/availability?date=${d}&service_id=${encodeURIComponent(service.id)}`).then((r) => setAvailability(r.data));
         setStep(2);
       }
     } finally {

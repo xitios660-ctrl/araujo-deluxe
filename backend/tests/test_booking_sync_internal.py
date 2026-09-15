@@ -126,5 +126,30 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "cancelada")
 
 
+
+
+    def test_duration_parser_and_overlap(self):
+        self.assertEqual(server.duration_to_minutes("2h30"), 150)
+        self.assertEqual(server.duration_to_minutes("40min"), 40)
+        self.assertTrue(server.intervals_overlap(930, 1080, 1020, 1170))
+        self.assertFalse(server.intervals_overlap(660, 810, 930, 1080))
+
+    async def test_long_service_blocks_overlapping_start(self):
+        fake = MagicMock()
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=[{
+            "id": "b1", "service_id": "glamour", "date": "2026-09-15", "time": "15:30",
+            "status": "confirmada", "duration_minutes": 150, "buffer_minutes": 0,
+        }])
+        fake.blocks.find.return_value.to_list = AsyncMock(return_value=[])
+        with patch.object(server, "db", fake), patch.object(server, "slot_in_past", return_value=False):
+            states = await server.get_slot_states("2026-09-15", service_id="brasileiro")
+        by_time = {s["time"]: s for s in states}
+        self.assertFalse(by_time["17:00"]["available"])
+        self.assertEqual(by_time["17:00"]["reason"], "agendado")
+
+    def test_phone_match_requires_full_number(self):
+        self.assertTrue(server.phones_match("+55 11 99999-1234", "11999991234"))
+        self.assertFalse(server.phones_match("99991234", "11999991234"))
+
 if __name__ == "__main__":
     unittest.main()

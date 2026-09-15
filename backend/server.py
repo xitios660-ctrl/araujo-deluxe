@@ -42,6 +42,7 @@ api_router = APIRouter(prefix="/api")
 TZ = ZoneInfo("America/Sao_Paulo")
 JWT_ALGORITHM = "HS256"
 PUBLIC_SITE_URL = os.environ.get("PUBLIC_SITE_URL", "https://araujo-deluxe-studio.onrender.com").rstrip("/")
+BOOKING_BUFFER_MINUTES = max(0, int(os.environ.get("BOOKING_BUFFER_MINUTES", "0")))
 
 # ---------- Business configuration ----------
 WEEKDAY_SLOTS = {
@@ -119,7 +120,19 @@ def pix_qr_base64(payload: str) -> str:
 
 
 def _digits(s: str) -> str:
-    return "".join(c for c in s if c.isdigit())
+    return "".join(c for c in (s or "") if c.isdigit())
+
+
+def canonical_phone(s: str) -> str:
+    digits = _digits(s)
+    if digits.startswith("55") and len(digits) in (12, 13):
+        digits = digits[2:]
+    return digits
+
+
+def phones_match(a: str, b: str) -> bool:
+    left, right = canonical_phone(a), canonical_phone(b)
+    return len(left) >= 10 and left == right
 
 
 # ---------- Auth helpers ----------
@@ -211,13 +224,58 @@ def slot_in_past(date_str: str, time_str: str) -> bool:
     return slot_dt <= now
 
 
-async def get_slot_states(date_str: str) -> List[dict]:
+def time_to_minutes(time_str: str) -> int:
+    h, m = map(int, time_str.split(":"))
+    return h * 60 + m
+
+
+def duration_to_minutes(value: str) -> int:
+    normalized = unicodedata.normalize("NFKD", (value or "").lower())
+    t = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    hours = re.search(r"(\d+)\s*h", t)
+    minutes = re.search(r"(\d+)\s*min", t)
+    total = (int(hours.group(1)) * 60 if hours else 0) + (int(minutes.group(1)) if minutes else 0)
+    return total or 60
+
+
+def service_duration_minutes(service_id: str) -> int:
+    service = SERVICES_BY_ID.get(service_id)
+    return duration_to_minutes(service.get("duration", "1h")) if service else 60
+
+
+def booking_duration_minutes(booking: dict) -> int:
+    if booking.get("duration_minutes"):
+        return max(1, int(booking["duration_minutes"]))
+    return service_duration_minutes(booking.get("service_id", ""))
+
+
+def booking_interval_minutes(booking: dict) -> tuple:
+    start = time_to_minutes(booking["time"])
+    return start, start + booking_duration_minutes(booking) + int(booking.get("buffer_minutes", 0) or 0)
+
+
+def candidate_interval_minutes(service_id: Optional[str], time_str: str) -> tuple:
+    start = time_to_minutes(time_str)
+    duration = service_duration_minutes(service_id) if service_id else 1
+    return start, start + duration + BOOKING_BUFFER_MINUTES
+
+
+def intervals_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    return a_start < b_end and b_start < a_end
+
+
+def candidate_lock_slots(date_str: str, time_str: str, service_id: Optional[str] = None) -> List[str]:
+    start, end = candidate_interval_minutes(service_id, time_str)
+    result = [slot for slot in slots_for_date(date_str) if start <= time_to_minutes(slot) < end]
+    return result or [time_str]
+
+
+async def get_slot_states(date_str: str, service_id: Optional[str] = None) -> List[dict]:
     slots = slots_for_date(date_str)
     bookings = await db.bookings.find({"date": date_str, "status": {"$ne": "cancelada"}}, {"_id": 0}).to_list(100)
     blocks = await db.blocks.find({"date": date_str}, {"_id": 0}).to_list(100)
     day_block = next((b for b in blocks if b.get("time") is None), None)
-    booked_times = {b["time"]: b for b in bookings}
-    blocked_times = {b["time"]: b for b in blocks if b.get("time")}
+    timed_blocks = [b for b in blocks if b.get("time")]
     result = []
     for t in slots:
         state = {"time": t, "available": True, "reason": None, "booking": None, "block_id": None}
@@ -225,10 +283,18 @@ async def get_slot_states(date_str: str) -> List[dict]:
             state.update(available=False, reason="passado")
         elif day_block:
             state.update(available=False, reason="bloqueado", block_id=day_block["id"])
-        elif t in blocked_times:
-            state.update(available=False, reason="bloqueado", block_id=blocked_times[t]["id"])
-        elif t in booked_times:
-            state.update(available=False, reason="agendado", booking=booked_times[t])
+        else:
+            c_start, c_end = candidate_interval_minutes(service_id, t)
+            blocked = next((b for b in timed_blocks if c_start <= time_to_minutes(b["time"]) < c_end), None)
+            if blocked:
+                state.update(available=False, reason="bloqueado", block_id=blocked["id"])
+            else:
+                collision = next(
+                    (b for b in bookings if intervals_overlap(c_start, c_end, *booking_interval_minutes(b))),
+                    None,
+                )
+                if collision:
+                    state.update(available=False, reason="agendado", booking=collision)
         result.append(state)
     return result
 
@@ -244,10 +310,10 @@ def booking_slot_lock_id(date_str: str, time_str: str) -> str:
     return f"{date_str}|{time_str}"
 
 
-async def get_day_availability(date_str: str) -> dict:
+async def get_day_availability(date_str: str, service_id: Optional[str] = None) -> dict:
     d = parse_date(date_str)
     scheduled_slots = slots_for_date(date_str)
-    states = await get_slot_states(date_str)
+    states = await get_slot_states(date_str, service_id=service_id)
     day_block = await db.blocks.find_one({"date": date_str, "time": None}, {"_id": 0})
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     scheduled_open = len(scheduled_slots) > 0
@@ -270,32 +336,36 @@ async def get_day_availability(date_str: str) -> dict:
         "day_blocked": bool(day_block),
         "day_block_id": day_block.get("id") if day_block else None,
         "closed_reason": closed_reason,
+        "service_id": service_id,
         "slots": states,
     }
 
 
-async def acquire_booking_slot(date_str: str, time_str: str):
-    lock_id = booking_slot_lock_id(date_str, time_str)
-    active = await db.bookings.find_one(
-        {"date": date_str, "time": time_str, "status": {"$ne": "cancelada"}},
-        {"_id": 0, "id": 1},
-    )
-    if active:
-        raise BookingSlotError("slot_taken", "Este horário acabou de ser reservado. Escolha outro.")
-
+async def acquire_booking_slot(date_str: str, time_str: str, service_id: Optional[str] = None, booking_id: Optional[str] = None) -> List[str]:
+    lock_slots = sorted(candidate_lock_slots(date_str, time_str, service_id), key=time_to_minutes)
+    inserted = []
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
     try:
-        await db.booking_slot_locks.insert_one({
-            "_id": lock_id,
-            "date": date_str,
-            "time": time_str,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+        for slot in lock_slots:
+            await db.booking_slot_locks.insert_one({
+                "_id": booking_slot_lock_id(date_str, slot),
+                "date": date_str,
+                "time": slot,
+                "booking_id": booking_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": expires_at,
+            })
+            inserted.append(slot)
     except DuplicateKeyError:
+        for slot in inserted:
+            await db.booking_slot_locks.delete_one({"_id": booking_slot_lock_id(date_str, slot)})
         raise BookingSlotError("slot_taken", "Este horário acabou de ser reservado. Escolha outro.")
+    return lock_slots
 
 
-async def release_booking_slot(date_str: str, time_str: str):
-    await db.booking_slot_locks.delete_one({"_id": booking_slot_lock_id(date_str, time_str)})
+async def release_booking_slot(date_str: str, time_str: str, locked_slots: Optional[List[str]] = None):
+    for slot in (locked_slots or [time_str]):
+        await db.booking_slot_locks.delete_one({"_id": booking_slot_lock_id(date_str, slot)})
 
 
 async def create_booking_record(
@@ -310,6 +380,10 @@ async def create_booking_record(
     if not service:
         raise BookingSlotError("service_not_found", "Serviço não encontrado.")
 
+    phone_digits = canonical_phone(client_phone)
+    if len(phone_digits) < 10:
+        raise BookingSlotError("invalid_phone", "Informe um WhatsApp válido com DDD.")
+
     valid_slots = slots_for_date(date_str)
     if not valid_slots:
         raise BookingSlotError("closed_day", "Não atendemos neste dia. Escolha de segunda a sábado.")
@@ -318,49 +392,53 @@ async def create_booking_record(
     if slot_in_past(date_str, time_str):
         raise BookingSlotError("past", "Este horário já passou. Escolha outro.")
 
-    day = await get_day_availability(date_str)
+    day = await get_day_availability(date_str, service_id=service_id)
     if not day["open"]:
         raise BookingSlotError("closed_day", day["closed_reason"] or "O estúdio está fechado neste dia.")
 
     slot = next((s for s in day["slots"] if s["time"] == time_str), None)
     if not slot or not slot["available"]:
-        raise BookingSlotError("slot_taken", "Este horário não está mais disponível. Escolha outro.")
+        raise BookingSlotError("slot_taken", "Este horário não está mais disponível para este procedimento. Escolha outro.")
 
-    await acquire_booking_slot(date_str, time_str)
+    booking_id = str(uuid.uuid4())
+    locked_slots = await acquire_booking_slot(date_str, time_str, service_id=service_id, booking_id=booking_id)
     try:
-        # Recheck after acquiring the slot. This catches a day/time block created
-        # between the first availability check and the final booking write.
-        refreshed = await get_day_availability(date_str)
+        refreshed = await get_day_availability(date_str, service_id=service_id)
         refreshed_slot = next((s for s in refreshed["slots"] if s["time"] == time_str), None)
         if not refreshed["open"]:
             raise BookingSlotError("closed_day", refreshed["closed_reason"] or "O estúdio está fechado neste dia.")
         if not refreshed_slot or not refreshed_slot["available"]:
-            raise BookingSlotError("slot_taken", "Este horário não está mais disponível. Escolha outro.")
+            raise BookingSlotError("slot_taken", "Este horário não está mais disponível para este procedimento. Escolha outro.")
 
+        deposit = min(service["deposit"], service["price"])
         booking = {
-            "id": str(uuid.uuid4()),
+            "id": booking_id,
             "code": f"AD-{uuid.uuid4().hex[:6].upper()}",
             "service_id": service["id"],
             "service_name": service["name"],
             "category": service["category"],
             "price": service["price"],
-            "deposit": service["deposit"],
+            "deposit": deposit,
+            "duration": service["duration"],
+            "duration_minutes": service_duration_minutes(service_id),
+            "buffer_minutes": BOOKING_BUFFER_MINUTES,
             "date": date_str,
             "time": time_str,
             "client_name": client_name.strip(),
             "client_phone": client_phone.strip(),
+            "client_phone_digits": phone_digits,
             "notes": notes.strip(),
-            "status": "pendente" if service["deposit"] > 0 else "confirmada",
+            "status": "pendente" if deposit > 0 else "confirmada",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.bookings.insert_one({**booking})
+        logging.getLogger(__name__).info("BOOKING_CREATED booking_id=%s service=%s date=%s time=%s", booking_id[:8], service_id, date_str, time_str)
         return booking
-    except Exception:
-        await release_booking_slot(date_str, time_str)
-        raise
+    finally:
+        await release_booking_slot(date_str, time_str, locked_slots)
 
 
-# ---------- Public routes ----------
+# ---------- Public routes ----------# ---------- Public routes ----------
 @api_router.get("/")
 async def root():
     return {"message": "Araújo Deluxe API"}
@@ -410,8 +488,10 @@ async def business_hours():
 
 
 @api_router.get("/availability")
-async def availability(date: str):
-    day = await get_day_availability(date)
+async def availability(date: str, service_id: Optional[str] = None):
+    if service_id and service_id not in SERVICES_BY_ID:
+        raise HTTPException(status_code=404, detail="Serviço não encontrado")
+    day = await get_day_availability(date, service_id=service_id)
     return {
         "date": day["date"],
         "weekday_name": day["weekday_name"],
@@ -458,12 +538,12 @@ async def lookup_bookings(q: str):
     if len(q) < 4:
         raise HTTPException(status_code=400, detail="Informe o código completo ou seu telefone com DDD.")
     results = await db.bookings.find({"code": q.upper()}, {"_id": 0}).to_list(20)
-    if not results:
-        digits = _digits(q)
-        if len(digits) >= 8:
-            all_b = await db.bookings.find({}, {"_id": 0}).to_list(2000)
-            results = [b for b in all_b if _digits(b["client_phone"]).endswith(digits) or digits.endswith(_digits(b["client_phone"]))]
-    return sorted(results, key=lambda b: (b["date"], b["time"]), reverse=True)[:20]
+    if results:
+        return sorted(results, key=lambda b: (b["date"], b["time"]), reverse=True)[:20]
+    digits = canonical_phone(q)
+    if len(digits) < 10:
+        raise HTTPException(status_code=400, detail="Informe o telefone completo com DDD.")
+    return await db.bookings.find({"client_phone_digits": digits}, {"_id": 0}).sort([("date", -1), ("time", -1)]).to_list(20)
 
 
 @api_router.post("/bookings/{booking_id}/cancel")
@@ -471,8 +551,7 @@ async def cancel_booking(booking_id: str, data: CancelInput):
     booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
     if not booking:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
-    d1, d2 = _digits(data.phone), _digits(booking["client_phone"])
-    if not d1 or not (d1.endswith(d2) or d2.endswith(d1)):
+    if not phones_match(data.phone, booking["client_phone"]):
         raise HTTPException(status_code=403, detail="Telefone não confere com o agendamento.")
     if booking["status"] not in ["pendente", "confirmada"]:
         raise HTTPException(status_code=400, detail="Este agendamento não pode mais ser cancelado.")
@@ -1758,7 +1837,7 @@ async def wa_smart_action(
         )
 
     if service and date_str and (wants_booking or asks_availability or state == "menu"):
-        day = await get_day_availability(date_str)
+        day = await get_day_availability(date_str, service_id=service["id"])
         if not day["scheduled_open"]:
             return wa_reply(f"Em *{fmt_date_br(date_str)}* é {day['weekday_name']} e o estúdio não abre 😔 Me fala outro dia.")
         if not day["open"]:
@@ -1984,15 +2063,16 @@ async def wa_natural_reply(text: str, state: str = "menu", phone: str = "", memo
 
 
 async def wa_find_bookings(phone: str, only_pending: bool = False) -> List[dict]:
-    digits = _digits(phone)[-8:]
-    query = {"status": "pendente"} if only_pending else {}
-    all_b = await db.bookings.find(query, {"_id": 0}).to_list(2000)
-    matches = [b for b in all_b if _digits(b["client_phone"])[-8:] == digits]
-    return sorted(matches, key=lambda b: b.get("created_at", ""), reverse=True)
+    digits = canonical_phone(phone)
+    if len(digits) < 10:
+        return []
+    query = {"client_phone_digits": digits}
+    if only_pending:
+        query["status"] = "pendente"
+    return await db.bookings.find(query, {"_id": 0}).sort("created_at", -1).to_list(50)
 
 
-
-def wa_booking_status_label(booking: dict) -> str:
+def wa_booking_status_labeldef wa_booking_status_label(booking: dict) -> str:
     if booking.get("status") == "cancelada":
         return "cancelado"
     if booking.get("status") == "concluida":
@@ -2136,29 +2216,33 @@ async def wa_move_booking(booking_id: str, new_date: str, new_time: str) -> dict
     if booking["date"] == new_date and booking["time"] == new_time:
         return booking
 
-    day = await get_day_availability(new_date)
+    day = await get_day_availability(new_date, service_id=booking.get("service_id"))
     if not day["open"]:
         raise BookingSlotError("closed_day", day.get("closed_reason") or "O estúdio está fechado nesse dia.")
     slot = next((s for s in day["slots"] if s["time"] == new_time), None)
     if not slot or not slot["available"]:
         raise BookingSlotError("slot_taken", "Esse horário não está mais disponível.")
 
-    await acquire_booking_slot(new_date, new_time)
-    old_date, old_time = booking["date"], booking["time"]
+    locked = await acquire_booking_slot(new_date, new_time, service_id=booking.get("service_id"), booking_id=booking_id)
     try:
+        refreshed = await get_day_availability(new_date, service_id=booking.get("service_id"))
+        slot = next((s for s in refreshed["slots"] if s["time"] == new_time), None)
+        if not refreshed["open"] or not slot or not slot["available"]:
+            raise BookingSlotError("slot_taken", "Esse horário não está mais disponível.")
         await db.bookings.update_one(
             {"id": booking_id},
             {"$set": {
                 "date": new_date,
                 "time": new_time,
+                "duration_minutes": booking_duration_minutes(booking),
+                "buffer_minutes": BOOKING_BUFFER_MINUTES,
                 "rescheduled_at": datetime.now(timezone.utc).isoformat(),
                 "rescheduled_source": "whatsapp",
             }},
         )
-        await release_booking_slot(old_date, old_time)
-    except Exception:
-        await release_booking_slot(new_date, new_time)
-        raise
+        logging.getLogger(__name__).info("BOOKING_RESCHEDULED booking_id=%s date=%s time=%s", booking_id[:8], new_date, new_time)
+    finally:
+        await release_booking_slot(new_date, new_time, locked)
 
     return await db.bookings.find_one({"id": booking_id}, {"_id": 0})
 
@@ -2456,8 +2540,8 @@ async def wa_priority_action(
     return None
 
 
-async def wa_available_slots(date_str: str) -> List[str]:
-    day = await get_day_availability(date_str)
+async def wa_available_slots(date_str: str, service_id: Optional[str] = None) -> List[str]:
+    day = await get_day_availability(date_str, service_id=service_id)
     if not day["open"]:
         return []
     return [s["time"] for s in day["slots"] if s["available"]]
@@ -2710,7 +2794,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             held_date = sdata.get("date")
             held_time = sdata.get("time")
             if held_date and held_time:
-                day = await get_day_availability(held_date)
+                day = await get_day_availability(held_date, service_id=service["id"])
                 current_available = [s["time"] for s in day["slots"] if s["available"]] if day["open"] else []
                 if held_time not in current_available:
                     await set_state("book_date", {"service_id": service["id"]})
@@ -2742,7 +2826,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             return {"reply": "Data inválida. 😅 Digite no formato *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*."}
         if ds < datetime.now(TZ).strftime("%Y-%m-%d"):
             return {"reply": "Essa data já passou. 😅 Escolha uma data a partir de hoje."}
-        day = await get_day_availability(ds)
+        day = await get_day_availability(ds, service_id=sdata.get("service_id") if state == "book_date" else None)
         if not day["scheduled_open"]:
             return {"reply": "Aos domingos o estúdio não abre. 😔 Escolha outra data (segunda a sábado)."}
         if not day["open"]:
@@ -2850,8 +2934,31 @@ async def seed_admin():
     await db.users.create_index("email", unique=True)
     await db.login_attempts.create_index("identifier")
     await db.bookings.create_index([("date", 1), ("time", 1)])
+    await db.bookings.create_index("client_phone_digits")
     await db.booking_slot_locks.create_index([("date", 1), ("time", 1)])
+    await db.booking_slot_locks.create_index("expires_at", expireAfterSeconds=0)
     await db.wa_memories.create_index("last_seen")
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    await db.booking_slot_locks.delete_many({
+        "$or": [
+            {"expires_at": {"$lt": datetime.now(timezone.utc)}},
+            {"expires_at": {"$exists": False}, "created_at": {"$lt": cutoff}},
+        ]
+    })
+    legacy = db.bookings.find(
+        {"$or": [{"client_phone_digits": {"$exists": False}}, {"duration_minutes": {"$exists": False}}]},
+        {"id": 1, "client_phone": 1, "service_id": 1},
+    )
+    async for item in legacy:
+        await db.bookings.update_one(
+            {"id": item["id"]},
+            {"$set": {
+                "client_phone_digits": canonical_phone(item.get("client_phone", "")),
+                "duration_minutes": service_duration_minutes(item.get("service_id", "")),
+                "buffer_minutes": 0,
+            }},
+        )
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
     existing = await db.users.find_one({"email": admin_email})
