@@ -2476,7 +2476,7 @@ async def wa_natural_reply(text: str, state: str = "menu", phone: str = "", memo
     remembered_service = wa_memory_service(memory)
     name_mentioned = wa_name_from_text(text)
 
-    if name_mentioned:
+    if name_mentioned and state != "book_name":
         return f"Prazer, *{name_mentioned}* 💛 Vou lembrar do seu nome nas próximas conversas por aqui."
 
     if any(x in t for x in ("lembra de mim", "voce lembra de mim", "vc lembra de mim", "ja falei com voce", "ja conversei com voce", "o que a gente conversou", "o que eu perguntei antes")):
