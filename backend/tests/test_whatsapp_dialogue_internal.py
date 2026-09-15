@@ -53,6 +53,91 @@ class AvailabilityLanguageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("11:00", result["reply"])
         self.assertNotIn("qual dia", result["reply"].lower())
 
+    async def test_time_pick_after_availability_keeps_date(self):
+        day = {
+            "date": "2026-09-16", "weekday_name": "Quarta-feira",
+            "scheduled_open": True, "open": True, "day_blocked": False,
+            "closed_reason": None,
+            "slots": [
+                {"time": "09:00", "available": True},
+                {"time": "15:30", "available": True},
+            ],
+        }
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={
+            "state": "avail_pick",
+            "data": {"date": "2026-09-16", "slots": ["09:00", "15:30"]},
+        })
+        fake.wa_sessions.update_one = AsyncMock()
+        with patch.object(server, "db", fake), \
+             patch.object(server, "get_day_availability", AsyncMock(return_value=day)):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="15:30", push_name="Cliente"),
+                auth={"test": True},
+            )
+        self.assertIn("procedimento", result["reply"].lower())
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "book_category")
+        self.assertEqual(update["data"]["date"], "2026-09-16")
+        self.assertEqual(update["data"]["time"], "15:30")
+
+    async def test_category_preserves_preselected_date_and_time(self):
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={
+            "state": "book_category",
+            "data": {"date": "2026-09-16", "time": "15:30"},
+        })
+        fake.wa_sessions.update_one = AsyncMock()
+        with patch.object(server, "db", fake):
+            await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Cílios", push_name="Cliente"),
+                auth={"test": True},
+            )
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "book_service")
+        self.assertEqual(update["data"]["date"], "2026-09-16")
+        self.assertEqual(update["data"]["time"], "15:30")
+        self.assertEqual(update["data"]["category"], "cilios")
+
+    async def test_service_uses_preselected_slot_without_asking_date_again(self):
+        day = {
+            "date": "2026-09-16", "weekday_name": "Quarta-feira",
+            "scheduled_open": True, "open": True, "day_blocked": False,
+            "closed_reason": None,
+            "slots": [{"time": "15:30", "available": True}],
+        }
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={
+            "state": "book_service",
+            "data": {"category": "cilios", "date": "2026-09-16", "time": "15:30"},
+        })
+        fake.wa_sessions.update_one = AsyncMock()
+        with patch.object(server, "db", fake), \
+             patch.object(server, "get_day_availability", AsyncMock(return_value=day)):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Volume Glamour", push_name="Cliente"),
+                auth={"test": True},
+            )
+        self.assertIn("nome completo", result["reply"].lower())
+        self.assertNotIn("para qual data", result["reply"].lower())
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "book_name")
+        self.assertEqual(update["data"]["service_id"], "glamour")
+        self.assertEqual(update["data"]["date"], "2026-09-16")
+        self.assertEqual(update["data"]["time"], "15:30")
+
     async def test_followup_day_keeps_availability_context(self):
         day = {
             "date": "2026-09-16", "weekday_name": "Quarta-feira",
