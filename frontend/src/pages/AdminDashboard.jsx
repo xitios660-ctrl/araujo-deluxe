@@ -205,9 +205,15 @@ export default function AdminDashboard() {
                       <p className="text-muted-foreground text-xs mt-0.5">{s.booking.service_name} · {BRL(s.booking.price)}</p>
                       <p className="text-muted-foreground text-xs">{s.booking.client_phone}</p>
                       <div className="flex gap-2 mt-3">
-                        <button onClick={() => setStatus(s.booking.id, s.booking.status === "pendente" ? "confirmada" : "concluida")} className="flex-1 rounded-full bg-foreground text-white text-xs font-semibold py-2 hover:bg-foreground/80 transition-colors duration-300" data-testid={`admin-complete-${s.time.replace(":", "")}`}>
-                          {s.booking.status === "pendente" ? "Confirmar sinal" : "Concluir"}
-                        </button>
+                        {s.booking.status === "pendente" && s.booking.proof_status === "em_analise" ? (
+                          <button onClick={() => viewProof(s.booking)} className="flex-1 rounded-full bg-sky-600 text-white text-xs font-semibold py-2 hover:bg-sky-700 transition-colors duration-300" data-testid={`admin-review-${s.time.replace(":", "")}`}>
+                            Analisar comprovante
+                          </button>
+                        ) : (
+                          <button onClick={() => setStatus(s.booking.id, s.booking.status === "pendente" ? "confirmada" : "concluida")} className="flex-1 rounded-full bg-foreground text-white text-xs font-semibold py-2 hover:bg-foreground/80 transition-colors duration-300" data-testid={`admin-complete-${s.time.replace(":", "")}`}>
+                            {s.booking.status === "pendente" ? "Confirmar sinal" : "Concluir"}
+                          </button>
+                        )}
                         <button onClick={() => setStatus(s.booking.id, "cancelada")} className="flex-1 rounded-full border border-destructive/40 text-destructive text-xs font-semibold py-2 hover:bg-destructive/10 transition-colors duration-300" data-testid={`admin-cancel-${s.time.replace(":", "")}`}>
                           Cancelar
                         </button>
@@ -277,7 +283,7 @@ export default function AdminDashboard() {
                           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_STYLE[b.status]}`}>{b.status}</span>
                           {b.proof_status === "em_analise" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-sky-100 text-sky-800">pagamento em análise</span>}
                           {b.proof_status === "rejeitado" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">pagamento não aprovado</span>}
-                          {b.payment_status === "confirmado" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-emerald-100 text-emerald-800">pagamento aprovado</span>}
+                          {["confirmado", "confirmado_manual"].includes(b.payment_status) && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-emerald-100 text-emerald-800">{b.payment_status === "confirmado_manual" ? "pagamento confirmado manualmente" : "pagamento aprovado"}</span>}
                           {b.proof_id && (
                             <button onClick={() => viewProof(b)} title="Ver comprovante" className="text-primary hover:scale-110 transition-transform duration-200" data-testid={`admin-proof-${b.code}`}>
                               <Receipt size={19} weight="duotone" />

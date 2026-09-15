@@ -112,6 +112,82 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 409)
         fake_db.blocks.insert_one.assert_not_awaited()
 
+    async def test_admin_manual_confirmation_sets_payment_status_and_notifies(self):
+        booking = {
+            "id": "b-manual",
+            "date": "2026-09-15",
+            "time": "15:30",
+            "client_phone": "5511999999999",
+            "status": "pendente",
+            "service_id": "glamour",
+            "service_name": "Volume Glamour",
+            "payment_status": "aguardando_comprovante",
+            "proof_status": None,
+        }
+        updated = {**booking, "status": "confirmada", "payment_status": "confirmado_manual"}
+        fake = MagicMock()
+        fake.bookings.find_one = AsyncMock(side_effect=[booking, updated])
+        fake.bookings.update_one = AsyncMock()
+        notify = AsyncMock(return_value=True)
+        with patch.object(server, "db", fake), patch.object(server, "bot_send_text", notify):
+            result = await server.update_booking(
+                "b-manual",
+                server.StatusUpdate(status="confirmada"),
+                user={"id": "admin"},
+            )
+        update = fake.bookings.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["payment_status"], "confirmado_manual")
+        self.assertEqual(result["payment_status"], "confirmado_manual")
+        notify.assert_awaited_once()
+
+    async def test_admin_cannot_bypass_proof_in_analysis(self):
+        booking = {
+            "id": "b-review",
+            "date": "2026-09-15",
+            "time": "15:30",
+            "client_phone": "5511999999999",
+            "status": "pendente",
+            "service_id": "glamour",
+            "service_name": "Volume Glamour",
+            "payment_status": "em_analise",
+            "proof_status": "em_analise",
+        }
+        fake = MagicMock()
+        fake.bookings.find_one = AsyncMock(return_value=booking)
+        fake.bookings.update_one = AsyncMock()
+        with patch.object(server, "db", fake):
+            with self.assertRaises(server.HTTPException) as ctx:
+                await server.update_booking(
+                    "b-review",
+                    server.StatusUpdate(status="confirmada"),
+                    user={"id": "admin"},
+                )
+        self.assertEqual(ctx.exception.status_code, 409)
+        fake.bookings.update_one.assert_not_awaited()
+
+    async def test_pending_booking_cannot_jump_to_completed(self):
+        booking = {
+            "id": "b-pending",
+            "date": "2026-09-15",
+            "time": "15:30",
+            "client_phone": "5511999999999",
+            "status": "pendente",
+            "service_id": "glamour",
+            "service_name": "Volume Glamour",
+        }
+        fake = MagicMock()
+        fake.bookings.find_one = AsyncMock(return_value=booking)
+        fake.bookings.update_one = AsyncMock()
+        with patch.object(server, "db", fake):
+            with self.assertRaises(server.HTTPException) as ctx:
+                await server.update_booking(
+                    "b-pending",
+                    server.StatusUpdate(status="concluida"),
+                    user={"id": "admin"},
+                )
+        self.assertEqual(ctx.exception.status_code, 409)
+        fake.bookings.update_one.assert_not_awaited()
+
     async def test_cancel_releases_slot_for_site_and_whatsapp(self):
         booking = {
             "id": "b1", "date": "2026-09-15", "time": "15:30", "client_phone": "11999999999",

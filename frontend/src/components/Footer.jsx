@@ -47,7 +47,7 @@ export const Footer = ({ scrollTo }) => {
           </p>
           <p className="text-sm text-white/70 leading-relaxed">
             Atendimento com hora marcada.
-            <br /> O sinal de reserva é pago via PIX e o comprovante é enviado pelo próprio site — a confirmação chega na hora pelo WhatsApp.
+            <br /> O sinal de reserva é pago via PIX e o comprovante pode ser enviado pelo próprio site. Ele entra em análise e o resultado chega pelo WhatsApp.
           </p>
         </div>
       </div>

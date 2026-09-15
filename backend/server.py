@@ -707,6 +707,11 @@ async def update_booking(booking_id: str, data: StatusUpdate, user: dict = Depen
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
 
     old_status = booking.get("status")
+    if data.status == "concluida" and old_status != "confirmada":
+        raise HTTPException(status_code=409, detail="Confirme o agendamento antes de marcá-lo como concluído.")
+    if data.status == "confirmada" and booking.get("proof_status") == "em_analise":
+        raise HTTPException(status_code=409, detail="Há um comprovante em análise. Aprove ou não aprove o comprovante antes de confirmar manualmente.")
+
     locked_slots = []
     if old_status == "cancelada" and data.status != "cancelada":
         day = await get_day_availability(booking["date"], service_id=booking.get("service_id"))
@@ -723,14 +728,28 @@ async def update_booking(booking_id: str, data: StatusUpdate, user: dict = Depen
         except BookingSlotError as exc:
             raise HTTPException(status_code=409, detail=exc.detail)
 
+    now = datetime.now(timezone.utc).isoformat()
+    updates = {
+        "status": data.status,
+        "status_updated_at": now,
+        "status_updated_by": user["id"],
+    }
+    manual_payment_confirmation = (
+        data.status == "confirmada"
+        and old_status != "confirmada"
+        and booking.get("payment_status") not in {"confirmado", "confirmado_manual", "nao_exigido"}
+    )
+    if manual_payment_confirmation:
+        updates.update({
+            "payment_status": "confirmado_manual",
+            "payment_confirmed_at": now,
+            "payment_confirmed_by": user["id"],
+        })
+
     try:
         await db.bookings.update_one(
             {"id": booking_id},
-            {"$set": {
-                "status": data.status,
-                "status_updated_at": datetime.now(timezone.utc).isoformat(),
-                "status_updated_by": user["id"],
-            }},
+            {"$set": updates},
         )
     finally:
         if locked_slots:
@@ -738,6 +757,18 @@ async def update_booking(booking_id: str, data: StatusUpdate, user: dict = Depen
 
     if data.status == "cancelada" and old_status != "cancelada":
         logging.getLogger(__name__).info("BOOKING_CANCELLED booking_id=%s source=admin", booking_id[:8])
+
+    if manual_payment_confirmation:
+        logging.getLogger(__name__).info("PAYMENT_CONFIRMED booking_id=%s source=admin_manual", booking_id[:8])
+        await bot_send_text(
+            booking["client_phone"],
+            (
+                "✅ *Pagamento confirmado pelo estúdio!*\n\n"
+                f"Seu horário de *{booking['service_name']}* em *{fmt_date_br(booking['date'])} às {booking['time']}* "
+                "está confirmado. 💛"
+            ),
+            transactional=True,
+        )
 
     return await db.bookings.find_one({"id": booking_id}, {"_id": 0})
 
