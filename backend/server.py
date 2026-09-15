@@ -364,6 +364,11 @@ async def root():
     return {"message": "Araújo Deluxe API"}
 
 
+@api_router.get("/health")
+async def health():
+    return {"ok": True, "service": "araujo-deluxe-api"}
+
+
 @api_router.get("/services")
 async def get_services():
     return SERVICES
