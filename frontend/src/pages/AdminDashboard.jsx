@@ -140,14 +140,23 @@ export default function AdminDashboard() {
               </div>
               <div className="flex items-center gap-3">
                 <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-xl border border-border px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary" data-testid="admin-agenda-date" />
-                {agenda?.open && !agenda.slots.some((s) => s.reason === "bloqueado" && !s.booking) && (
+                {agenda?.day_blocked ? (
+                  <button onClick={() => unblock(agenda.day_block_id)} className="rounded-full border border-emerald-500/40 text-emerald-700 text-xs font-semibold px-4 py-2.5 hover:bg-emerald-50 transition-colors duration-300" data-testid="admin-unblock-day-button">
+                    Liberar dia inteiro
+                  </button>
+                ) : agenda?.scheduled_open ? (
                   <button onClick={() => block(null)} className="rounded-full border border-destructive/40 text-destructive text-xs font-semibold px-4 py-2.5 hover:bg-destructive/10 transition-colors duration-300" data-testid="admin-block-day-button">
                     Bloquear dia inteiro
                   </button>
-                )}
+                ) : null}
               </div>
             </div>
-            {agenda && !agenda.open && <p className="text-muted-foreground text-sm">Domingo — o estúdio não abre neste dia.</p>}
+            {agenda && !agenda.open && (
+              <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                <p className="text-amber-900 text-sm font-semibold">Dia fechado</p>
+                <p className="text-amber-800/80 text-xs mt-1">{agenda.closed_reason || "O estúdio não atende nesta data."}</p>
+              </div>
+            )}
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {agenda?.slots.map((s) => (
                 <div key={s.time} className={`rounded-2xl border p-5 ${s.booking ? "border-primary/40 bg-accent/40" : s.reason === "bloqueado" ? "border-border bg-muted" : "border-border"}`} data-testid={`admin-slot-${s.time.replace(":", "")}`}>

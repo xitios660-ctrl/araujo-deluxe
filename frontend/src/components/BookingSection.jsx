@@ -221,7 +221,12 @@ export const BookingSection = ({ preselected }) => {
                   subtitle={date ? `${availability?.weekday_name || ""}, ${format(date, "dd 'de' MMMM", { locale: ptBR })}` : ""}
                 />
                 {!availability && <p className="text-white/50 text-sm">Consultando a agenda…</p>}
-                {availability && !availability.open && <p className="text-white/70">Não atendemos neste dia. Volte e escolha outra data.</p>}
+                {availability && !availability.open && (
+                  <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-5 max-w-2xl">
+                    <p className="text-white font-semibold">Este dia está fechado.</p>
+                    <p className="text-white/60 text-sm mt-1">{availability.closed_reason || "Volte e escolha outra data."}</p>
+                  </div>
+                )}
                 {availability?.open && (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-2xl" data-testid="booking-slots">
                     {availability.slots.map((s) => (
