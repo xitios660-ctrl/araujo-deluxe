@@ -1,0 +1,19 @@
+name: Keep Araújo Deluxe backend awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping backend health
+        run: |
+          set -e
+          curl --fail --silent --show-error --max-time 60             --retry 2 --retry-delay 5             https://dente-de-cobra-api.onrender.com/api/health
