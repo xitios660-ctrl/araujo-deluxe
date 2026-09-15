@@ -8,6 +8,7 @@ import os
 import uuid
 import logging
 from bot_process import BotProcess
+from owner_whatsapp_review import handle_owner_review
 import bcrypt
 import jwt
 import qrcode
@@ -1183,7 +1184,7 @@ Assim que ele for aprovado ou não aprovado, eu te aviso por aqui. 💛
 💰 Sinal: R$ {booking['deposit']}
 🔑 Código: {booking['code']}
 
-Abra o painel do gestor para aprovar ou não aprovar."""
+Você pode analisar direto por aqui:\n✅ Responda *APROVAR {booking['code']}*\n❌ Responda *REJEITAR {booking['code']}*\nou abra o painel do gestor."""
     if mime.startswith("image/"):
         await bot_send_image(OWNER_WA, owner_msg, data_base64, mime)
     else:
@@ -3391,6 +3392,10 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
     elif lower.startswith("slot:"):
         text = lower.split(":", 1)[1]
         lower = text
+
+    owner_reply = await handle_owner_review(phone, text)
+    if owner_reply is not None:
+        return {"reply": owner_reply}
     if lower in {"parar", "sair", "stop", "não quero receber mensagens", "nao quero receber mensagens"}:
         await db.wa_preferences.update_one({"_id": phone}, {"$set": {"blocked": True}}, upsert=True)
         return {"reply": None}
