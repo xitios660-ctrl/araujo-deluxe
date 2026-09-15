@@ -25,11 +25,13 @@ export default function AdminDashboard() {
   const [bookings, setBookings] = useState([]);
   const [filter, setFilter] = useState("");
   const [proof, setProof] = useState(null);
+  const [proofAction, setProofAction] = useState(null);
 
   const viewProof = async (b) => {
     try {
       const { data } = await api.get(`/admin/proofs/${b.proof_id}`);
-      setProof({ ...data, code: b.code });
+      setProofAction(null);
+      setProof({ ...data, code: b.code, booking: b });
     } catch (e) {
       toast.error(apiError(e));
     }
@@ -83,6 +85,25 @@ export default function AdminDashboard() {
       refresh();
     } catch (e) {
       toast.error(apiError(e));
+    }
+  };
+
+  const reviewProof = async (action) => {
+    if (!proof?.id) return;
+    setProofAction(action);
+    try {
+      const endpoint = action === "approve" ? "approve" : "reject";
+      const { data } = await api.post(`/admin/proofs/${proof.id}/${endpoint}`);
+      toast.success(action === "approve" ? "Comprovante aprovado e agendamento confirmado" : "Comprovante não aprovado. Cliente avisado para reenviar.");
+      if (data.notification_sent === false) {
+        toast.warning("O status foi salvo, mas o WhatsApp não conseguiu enviar a mensagem agora.");
+      }
+      setProof(null);
+      refresh();
+    } catch (e) {
+      toast.error(apiError(e));
+    } finally {
+      setProofAction(null);
     }
   };
 
@@ -233,8 +254,10 @@ export default function AdminDashboard() {
                       <td className="py-3.5 pr-4">{b.service_name}</td>
                       <td className="py-3.5 pr-4 whitespace-nowrap">{BRL(b.price)}</td>
                       <td className="py-3.5 pr-4">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_STYLE[b.status]}`}>{b.status}</span>
+                          {b.proof_status === "em_analise" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-sky-100 text-sky-800">comprovante em análise</span>}
+                          {b.proof_status === "rejeitado" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">comprovante não aprovado</span>}
                           {b.proof_id && (
                             <button onClick={() => viewProof(b)} title="Ver comprovante" className="text-primary hover:scale-110 transition-transform duration-200" data-testid={`admin-proof-${b.code}`}>
                               <Receipt size={19} weight="duotone" />
@@ -243,12 +266,16 @@ export default function AdminDashboard() {
                         </div>
                       </td>
                       <td className="py-3.5">
-                        {(b.status === "confirmada" || b.status === "pendente") && (
+                        {b.proof_status === "em_analise" ? (
+                          <button onClick={() => viewProof(b)} className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 text-sky-700 text-xs font-semibold px-3 py-2 hover:bg-sky-100 transition-colors" data-testid={`admin-row-review-${b.code}`}>
+                            <Receipt size={18} /> Analisar
+                          </button>
+                        ) : (b.status === "confirmada" || b.status === "pendente") && (
                           <div className="flex gap-2">
-                            <button onClick={() => setStatus(b.id, b.status === "pendente" ? "confirmada" : "concluida")} title={b.status === "pendente" ? "Confirmar sinal recebido" : "Concluir"} className="text-emerald-600 hover:scale-110 transition-transform duration-200" data-testid={`admin-row-complete-${b.code}`}>
+                            <button onClick={() => setStatus(b.id, b.status === "pendente" ? "confirmada" : "concluida")} title={b.status === "pendente" ? "Confirmar manualmente" : "Concluir"} className="text-emerald-600 hover:scale-110 transition-transform duration-200" data-testid={`admin-row-complete-${b.code}`}>
                               <CheckCircle size={20} weight="fill" />
                             </button>
-                            <button onClick={() => setStatus(b.id, "cancelada")} title="Cancelar" className="text-red-500 hover:scale-110 transition-transform duration-200" data-testid={`admin-row-cancel-${b.code}`}>
+                            <button onClick={() => setStatus(b.id, "cancelada")} title="Cancelar agendamento" className="text-red-500 hover:scale-110 transition-transform duration-200" data-testid={`admin-row-cancel-${b.code}`}>
                               <XCircle size={20} weight="fill" />
                             </button>
                           </div>
@@ -279,10 +306,43 @@ export default function AdminDashboard() {
               </button>
             </div>
             {proof.mime === "application/pdf" ? (
-              <embed src={`data:application/pdf;base64,${proof.data}`} type="application/pdf" className="w-full h-[65vh] rounded-xl" />
+              <embed src={`data:application/pdf;base64,${proof.data}`} type="application/pdf" className="w-full h-[55vh] rounded-xl" />
             ) : (
               <img src={`data:${proof.mime};base64,${proof.data}`} alt="Comprovante" className="w-full rounded-xl" data-testid="admin-proof-image" />
             )}
+            <div className="mt-5 border-t border-border pt-5">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Status do comprovante</p>
+                  <p className={`text-sm font-semibold mt-1 ${proof.status === "aprovado" ? "text-emerald-700" : proof.status === "rejeitado" ? "text-red-600" : "text-sky-700"}`}>
+                    {proof.status === "aprovado" ? "Aprovado" : proof.status === "rejeitado" ? "Não aprovado" : "Em análise"}
+                  </p>
+                </div>
+                {proof.status === "em_analise" && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => reviewProof("reject")}
+                      disabled={Boolean(proofAction)}
+                      className="rounded-full border border-red-300 text-red-600 text-sm font-semibold px-5 py-2.5 hover:bg-red-50 disabled:opacity-50"
+                      data-testid="admin-proof-reject"
+                    >
+                      {proofAction === "reject" ? "Salvando…" : "Não aprovar"}
+                    </button>
+                    <button
+                      onClick={() => reviewProof("approve")}
+                      disabled={Boolean(proofAction)}
+                      className="rounded-full bg-emerald-600 text-white text-sm font-semibold px-5 py-2.5 hover:bg-emerald-700 disabled:opacity-50"
+                      data-testid="admin-proof-approve"
+                    >
+                      {proofAction === "approve" ? "Aprovando…" : "Aprovar comprovante"}
+                    </button>
+                  </div>
+                )}
+              </div>
+              {proof.status === "em_analise" && (
+                <p className="text-muted-foreground text-xs mt-3">Ao aprovar ou não aprovar, o cliente recebe a resposta no WhatsApp automaticamente.</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -300,6 +360,8 @@ const StatCard = ({ icon: Icon, label, value, testId }) => (
 
 const SlotBadge = ({ slot }) => {
   if (slot.booking) {
+    if (slot.booking.status === "pendente" && slot.booking.proof_status === "em_analise") return <span className="rounded-full bg-sky-100 text-sky-800 text-xs font-semibold px-3 py-1">comprovante em análise</span>;
+    if (slot.booking.status === "pendente" && slot.booking.proof_status === "rejeitado") return <span className="rounded-full bg-red-100 text-red-700 text-xs font-semibold px-3 py-1">comprovante não aprovado</span>;
     if (slot.booking.status === "pendente") return <span className="rounded-full bg-amber-100 text-amber-800 text-xs font-semibold px-3 py-1">sinal pendente</span>;
     return <span className="rounded-full bg-primary/15 text-primary text-xs font-semibold px-3 py-1">agendado</span>;
   }

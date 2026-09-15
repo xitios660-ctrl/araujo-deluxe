@@ -3,11 +3,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ptBR } from "date-fns/locale";
 import { format } from "date-fns";
 import { toast } from "sonner";
-import { CheckCircle, CaretLeft, SealCheck, CalendarBlank, Clock, User, CopySimple, PixLogo, UploadSimple, WhatsappLogo } from "@phosphor-icons/react";
+import { CheckCircle, CaretLeft, SealCheck, CalendarBlank, Clock, User, CopySimple, PixLogo, UploadSimple, WhatsappLogo, HourglassMedium, XCircle } from "@phosphor-icons/react";
 import { Calendar } from "../components/ui/calendar";
 import { api, apiError, BRL, CATEGORY_LABELS } from "../lib/api";
 
-const STEPS = ["Serviço", "Data", "Horário", "Seus dados", "Confirmado"];
+const STEPS = ["Serviço", "Data", "Horário", "Seus dados", "Pagamento"];
 
 const slide = {
   initial: { opacity: 0, x: 60, rotateY: 6 },
@@ -38,9 +38,9 @@ export const BookingSection = ({ preselected }) => {
         r.onerror = rej;
         r.readAsDataURL(file);
       });
-      await api.post(`/bookings/${booking.id}/proof`, { data_base64: b64, mime: file.type || "image/jpeg" });
-      setBooking((b) => ({ ...b, status: "confirmada", proof_uploaded: true }));
-      toast.success("Comprovante enviado! Horário confirmado ✨");
+      const { data } = await api.post(`/bookings/${booking.id}/proof`, { data_base64: b64, mime: file.type || "image/jpeg" });
+      setBooking((b) => ({ ...b, status: data.status, proof_status: data.proof_status, proof_id: data.proof_id, proof_uploaded: true }));
+      toast.success("Comprovante enviado! Agora ele está sendo analisado ✨");
     } catch (e) {
       toast.error(apiError(e));
     } finally {
@@ -51,6 +51,30 @@ export const BookingSection = ({ preselected }) => {
   useEffect(() => {
     api.get("/services").then((r) => setServices(r.data)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!booking?.code || booking.proof_status !== "em_analise") return;
+    let active = true;
+    const checkProof = async () => {
+      try {
+        const { data } = await api.get(`/bookings/lookup?q=${encodeURIComponent(booking.code)}`);
+        const latest = data.find((item) => item.id === booking.id);
+        if (!latest || !active) return;
+        if (latest.proof_status === "aprovado" || latest.status === "confirmada") {
+          setBooking((current) => current ? { ...current, ...latest } : current);
+          toast.success("Pagamento aprovado! Seu horário está confirmado ✨");
+        } else if (latest.proof_status === "rejeitado") {
+          setBooking((current) => current ? { ...current, ...latest } : current);
+          toast.error("O comprovante não foi aprovado. Você pode enviar outro.");
+        }
+      } catch (_) {}
+    };
+    const timer = setInterval(checkProof, 12000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [booking?.code, booking?.id, booking?.proof_status]);
 
   useEffect(() => {
     if (preselected) {
@@ -304,9 +328,17 @@ export const BookingSection = ({ preselected }) => {
             {step === 4 && booking && (
               <motion.div key="s4" {...slide} className="text-center py-6">
                 <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring", stiffness: 200, damping: 14, delay: 0.15 }}>
-                  <SealCheck size={72} weight="fill" className={booking.status === "pendente" ? "text-amber-400 mx-auto" : "text-primary mx-auto"} />
+                  {booking.proof_status === "em_analise" ? (
+                    <HourglassMedium size={72} weight="duotone" className="text-sky-300 mx-auto" />
+                  ) : booking.proof_status === "rejeitado" ? (
+                    <XCircle size={72} weight="duotone" className="text-red-400 mx-auto" />
+                  ) : (
+                    <SealCheck size={72} weight="fill" className={booking.status === "pendente" ? "text-amber-400 mx-auto" : "text-primary mx-auto"} />
+                  )}
                 </motion.div>
-                <h3 className="font-display text-3xl sm:text-4xl text-white mt-6">{booking.status === "pendente" ? "Falta só o sinal!" : "Horário confirmado!"}</h3>
+                <h3 className="font-display text-3xl sm:text-4xl text-white mt-6">
+                  {booking.status === "confirmada" ? "Horário confirmado!" : booking.proof_status === "em_analise" ? "Comprovante em análise" : booking.proof_status === "rejeitado" ? "Comprovante não aprovado" : "Falta só o sinal!"}
+                </h3>
                 <p className="text-white/60 mt-2 text-sm">Código do agendamento: <span className="text-primary font-semibold">{booking.code}</span></p>
                 <div className={`grid gap-6 mx-auto mt-8 text-left ${booking.payment ? "md:grid-cols-2 max-w-3xl items-start" : "max-w-md"}`}>
                   <div className="glass-dark rounded-3xl p-8 space-y-4" data-testid="booking-confirmation-card">
@@ -317,13 +349,34 @@ export const BookingSection = ({ preselected }) => {
                   </div>
                   {booking.payment && (
                     <div className="bg-white rounded-3xl p-8" data-testid="booking-pix-panel">
-                      {booking.status === "pendente" ? (
+                      {booking.status === "pendente" && booking.proof_status === "em_analise" ? (
+                        <div className="text-center py-5" data-testid="booking-proof-reviewing">
+                          <HourglassMedium size={46} weight="duotone" className="text-sky-600 mx-auto" />
+                          <p className="text-foreground font-semibold text-sm mt-3">Comprovante em análise</p>
+                          <p className="text-muted-foreground text-xs mt-2 leading-relaxed">
+                            Recebemos seu comprovante. Assim que ele for aprovado ou não aprovado, você receberá uma mensagem no WhatsApp. 💛
+                          </p>
+                        </div>
+                      ) : booking.status === "pendente" && booking.proof_status === "rejeitado" ? (
+                        <div className="text-center py-4" data-testid="booking-proof-rejected">
+                          <XCircle size={44} weight="duotone" className="text-red-500 mx-auto" />
+                          <p className="text-foreground font-semibold text-sm mt-3">Comprovante não aprovado</p>
+                          <p className="text-muted-foreground text-xs mt-2 leading-relaxed">
+                            Confira o pagamento e envie um novo comprovante para análise.
+                          </p>
+                          <label className={`mt-4 w-full rounded-full bg-primary text-white text-sm font-semibold py-3.5 flex items-center justify-center gap-2 cursor-pointer ${proofUploading ? "opacity-60 pointer-events-none" : ""}`}>
+                            <UploadSimple size={19} weight="bold" />
+                            {proofUploading ? "Enviando…" : "Enviar novo comprovante"}
+                            <input type="file" accept="image/*,application/pdf" className="hidden" disabled={proofUploading} onChange={(e) => uploadProof(e.target.files?.[0])} />
+                          </label>
+                        </div>
+                      ) : booking.status === "pendente" ? (
                         <>
                           <p className="flex items-center gap-2 text-foreground font-semibold text-sm">
                             <PixLogo size={22} className="text-emerald-600" /> Pague o sinal de {BRL(booking.payment.amount)} via PIX
                           </p>
                           <p className="text-muted-foreground text-xs mt-2 leading-relaxed">
-                            Envie o comprovante <strong>aqui pelo site</strong> — seu horário é confirmado na hora e você recebe a confirmação no WhatsApp.
+                            Envie o comprovante <strong>aqui pelo site</strong>. Ele ficará em análise e você receberá a resposta no WhatsApp.
                           </p>
                           <img
                             src={`data:image/png;base64,${booking.payment.qr_base64}`}
@@ -357,9 +410,9 @@ export const BookingSection = ({ preselected }) => {
                       ) : (
                         <div className="text-center py-4" data-testid="booking-proof-confirmed">
                           <SealCheck size={44} weight="fill" className="text-emerald-500 mx-auto" />
-                          <p className="text-foreground font-semibold text-sm mt-3">Comprovante recebido!</p>
+                          <p className="text-foreground font-semibold text-sm mt-3">Pagamento aprovado!</p>
                           <p className="text-muted-foreground text-xs mt-2 leading-relaxed">
-                            Seu horário está confirmado. A confirmação chega no seu WhatsApp em instantes. 💛
+                            Seu horário está confirmado. A confirmação também foi enviada para o seu WhatsApp. 💛
                           </p>
                         </div>
                       )}

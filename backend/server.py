@@ -714,70 +714,159 @@ def fmt_date_br(date_str: str) -> str:
     return parse_date(date_str).strftime("%d/%m/%Y")
 
 
-async def whatsapp_contact_allowed(phone: str):
+async def whatsapp_contact_allowed(phone: str, transactional: bool = False):
     phone = _digits(phone)
     pref = await db.wa_preferences.find_one({"_id": phone})
     if pref and pref.get("blocked"):
         return False
     if phone == _digits(OWNER_WA):
         return True
+    if transactional:
+        return True
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     return bool(pref and pref.get("last_incoming", "") >= since)
 
 
-async def bot_send_text(phone: str, message: str):
-    if not await whatsapp_contact_allowed(phone):
-        return
+async def bot_send_text(phone: str, message: str, transactional: bool = False) -> bool:
+    if not await whatsapp_contact_allowed(phone, transactional=transactional):
+        return False
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            await c.post(f"{BOT_URL}/send", headers=BOT_HEADERS, json={"phone": _digits(phone), "message": message})
+            response = await c.post(
+                f"{BOT_URL}/send",
+                headers=BOT_HEADERS,
+                json={"phone": _digits(phone), "message": message},
+            )
+            response.raise_for_status()
+            return True
     except Exception as e:
         logging.getLogger(__name__).warning(f"Bot send falhou: {e}")
+        return False
 
 
-async def bot_send_image(phone: str, caption: str, base64_data: str, mimetype: str):
+async def bot_send_image(phone: str, caption: str, base64_data: str, mimetype: str) -> bool:
     if not await whatsapp_contact_allowed(phone):
-        return
+        return False
     try:
         async with httpx.AsyncClient(timeout=40) as c:
-            await c.post(f"{BOT_URL}/send-image", headers=BOT_HEADERS, json={"phone": _digits(phone), "caption": caption, "base64": base64_data, "mimetype": mimetype})
+            response = await c.post(
+                f"{BOT_URL}/send-image",
+                headers=BOT_HEADERS,
+                json={"phone": _digits(phone), "caption": caption, "base64": base64_data, "mimetype": mimetype},
+            )
+            response.raise_for_status()
+            return True
     except Exception as e:
         logging.getLogger(__name__).warning(f"Bot send-image falhou: {e}")
+        return False
 
 
-async def confirm_with_proof(booking: dict, data_base64: str, mime: str, source: str, notify_client: bool = True) -> str:
+async def store_proof_for_review(booking: dict, data_base64: str, mime: str, source: str, notify_client: bool = True) -> str:
+    now = datetime.now(timezone.utc).isoformat()
     proof = {
         "id": str(uuid.uuid4()),
         "booking_id": booking["id"],
         "mime": mime,
         "data": data_base64,
         "source": source,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "em_analise",
+        "created_at": now,
     }
     await db.proofs.insert_one({**proof})
-    await db.bookings.update_one({"id": booking["id"]}, {"$set": {"status": "confirmada", "proof_id": proof["id"]}})
+    await db.bookings.update_one(
+        {"id": booking["id"]},
+        {
+            "$set": {
+                "status": "pendente",
+                "proof_id": proof["id"],
+                "proof_status": "em_analise",
+                "proof_uploaded_at": now,
+            },
+            "$unset": {"proof_reviewed_at": "", "proof_reviewed_by": ""},
+        },
+    )
+
     date_br = fmt_date_br(booking["date"])
     if notify_client:
         client_msg = (
-            "✅ *Comprovante recebido!*\n\n"
-            "Seu horário no *Araújo Deluxe* está *CONFIRMADO* ✨\n\n"
-            f"📋 {booking['service_name']}\n"
-            f"📅 {date_br} às {booking['time']}\n"
-            f"🔑 Código: {booking['code']}\n\n"
-            "Até lá! 💛"
+            "📥 *Comprovante recebido!*
+
+"
+            "Seu comprovante foi enviado e está *EM ANÁLISE*.
+"
+            "Assim que ele for aprovado ou não aprovado, eu te aviso por aqui. 💛
+
+"
+            f"📋 {booking['service_name']}
+"
+            f"📅 {date_br} às {booking['time']}
+"
+            f"🔑 Código: {booking['code']}"
         )
-        await bot_send_text(booking["client_phone"], client_msg)
+        await bot_send_text(booking["client_phone"], client_msg, transactional=True)
+
     owner_msg = (
-        "📥 *Novo agendamento confirmado!*\n\n"
-        f"👤 {booking['client_name']}\n"
-        f"📱 {booking['client_phone']}\n"
-        f"📋 {booking['service_name']} · R$ {booking['price']}\n"
-        f"📅 {date_br} às {booking['time']}\n"
-        f"💰 Sinal: R$ {booking['deposit']} (comprovante anexado)\n"
-        f"🔑 Código: {booking['code']}"
+        "📥 *Novo comprovante para analisar!*
+
+"
+        f"👤 {booking['client_name']}
+"
+        f"📱 {booking['client_phone']}
+"
+        f"📋 {booking['service_name']} · R$ {booking['price']}
+"
+        f"📅 {date_br} às {booking['time']}
+"
+        f"💰 Sinal: R$ {booking['deposit']}
+"
+        f"🔑 Código: {booking['code']}
+
+"
+        "Abra o painel do gestor para aprovar ou não aprovar."
     )
-    await bot_send_image(OWNER_WA, owner_msg, data_base64, mime)
+    if mime.startswith("image/"):
+        await bot_send_image(OWNER_WA, owner_msg, data_base64, mime)
+    else:
+        await bot_send_text(OWNER_WA, owner_msg)
     return proof["id"]
+
+
+async def notify_proof_review_result(booking: dict, approved: bool) -> bool:
+    date_br = fmt_date_br(booking["date"])
+    if approved:
+        message = (
+            "✅ *Pagamento aprovado!*
+
+"
+            "Seu comprovante foi aprovado e seu horário no *Araújo Deluxe* está *CONFIRMADO* ✨
+
+"
+            f"📋 {booking['service_name']}
+"
+            f"📅 {date_br} às {booking['time']}
+"
+            f"🔑 Código: {booking['code']}
+
+"
+            "Te esperamos! 💛"
+        )
+    else:
+        message = (
+            "❌ *Comprovante não aprovado*
+
+"
+            "Não conseguimos aprovar o comprovante enviado. Seu horário ainda não está confirmado.
+"
+            "Por favor, confira o pagamento e envie um novo comprovante pelo site ou aqui no WhatsApp. 💛
+
+"
+            f"📋 {booking['service_name']}
+"
+            f"📅 {date_br} às {booking['time']}
+"
+            f"🔑 Código: {booking['code']}"
+        )
+    return await bot_send_text(booking["client_phone"], message, transactional=True)
 
 
 @api_router.post("/bookings/{booking_id}/proof")
@@ -785,14 +874,30 @@ async def upload_proof(booking_id: str, data: ProofUpload):
     booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
     if not booking:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
-    if booking.get("proof_id"):
-        return {"ok": True, "status": "confirmada", "proof_id": booking["proof_id"]}
-    if booking["status"] not in ("pendente", "confirmada"):
+
+    if booking.get("status") == "confirmada":
+        return {
+            "ok": True,
+            "status": "confirmada",
+            "proof_status": booking.get("proof_status") or "aprovado",
+            "proof_id": booking.get("proof_id"),
+        }
+    if booking.get("status") != "pendente":
         raise HTTPException(status_code=400, detail="Este agendamento não aceita mais comprovante.")
+
+    if booking.get("proof_status") == "em_analise" and booking.get("proof_id"):
+        return {
+            "ok": True,
+            "status": "pendente",
+            "proof_status": "em_analise",
+            "proof_id": booking["proof_id"],
+        }
+
     if len(data.data_base64) > 11_000_000:
         raise HTTPException(status_code=400, detail="Arquivo muito grande. Envie até 8MB.")
-    proof_id = await confirm_with_proof(booking, data.data_base64, data.mime, "site")
-    return {"ok": True, "status": "confirmada", "proof_id": proof_id}
+
+    proof_id = await store_proof_for_review(booking, data.data_base64, data.mime, "site")
+    return {"ok": True, "status": "pendente", "proof_status": "em_analise", "proof_id": proof_id}
 
 
 @api_router.get("/admin/proofs/{proof_id}")
@@ -800,7 +905,63 @@ async def get_proof(proof_id: str, user: dict = Depends(get_current_user)):
     proof = await db.proofs.find_one({"id": proof_id}, {"_id": 0})
     if not proof:
         raise HTTPException(status_code=404, detail="Comprovante não encontrado")
+    booking = await db.bookings.find_one({"id": proof["booking_id"]}, {"_id": 0})
+    if not proof.get("status"):
+        proof["status"] = (
+            (booking or {}).get("proof_status")
+            or ("aprovado" if (booking or {}).get("status") == "confirmada" else "em_analise")
+        )
     return proof
+
+
+async def _get_reviewable_proof(proof_id: str):
+    proof = await db.proofs.find_one({"id": proof_id}, {"_id": 0})
+    if not proof:
+        raise HTTPException(status_code=404, detail="Comprovante não encontrado")
+    booking = await db.bookings.find_one({"id": proof["booking_id"]}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if booking.get("proof_id") != proof_id:
+        raise HTTPException(status_code=409, detail="Este não é mais o comprovante atual deste agendamento.")
+    return proof, booking
+
+
+@api_router.post("/admin/proofs/{proof_id}/approve")
+async def approve_proof(proof_id: str, user: dict = Depends(get_current_user)):
+    proof, booking = await _get_reviewable_proof(proof_id)
+    if proof.get("status") == "aprovado" and booking.get("status") == "confirmada":
+        return {"ok": True, "status": "confirmada", "proof_status": "aprovado", "notification_sent": None}
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.proofs.update_one(
+        {"id": proof_id},
+        {"$set": {"status": "aprovado", "reviewed_at": now, "reviewed_by": user["id"]}},
+    )
+    await db.bookings.update_one(
+        {"id": booking["id"]},
+        {"$set": {"status": "confirmada", "proof_status": "aprovado", "proof_reviewed_at": now, "proof_reviewed_by": user["id"]}},
+    )
+    sent = await notify_proof_review_result(booking, True)
+    return {"ok": True, "status": "confirmada", "proof_status": "aprovado", "notification_sent": sent}
+
+
+@api_router.post("/admin/proofs/{proof_id}/reject")
+async def reject_proof(proof_id: str, user: dict = Depends(get_current_user)):
+    proof, booking = await _get_reviewable_proof(proof_id)
+    if proof.get("status") == "rejeitado" and booking.get("proof_status") == "rejeitado":
+        return {"ok": True, "status": "pendente", "proof_status": "rejeitado", "notification_sent": None}
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.proofs.update_one(
+        {"id": proof_id},
+        {"$set": {"status": "rejeitado", "reviewed_at": now, "reviewed_by": user["id"]}},
+    )
+    await db.bookings.update_one(
+        {"id": booking["id"]},
+        {"$set": {"status": "pendente", "proof_status": "rejeitado", "proof_reviewed_at": now, "proof_reviewed_by": user["id"]}},
+    )
+    sent = await notify_proof_review_result(booking, False)
+    return {"ok": True, "status": "pendente", "proof_status": "rejeitado", "notification_sent": sent}
 
 
 @api_router.get("/admin/whatsapp/status")
@@ -1642,16 +1803,24 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         if not pending:
             return {"reply": "Não encontrei nenhuma reserva aguardando comprovante para este número. 🤔\nDigite *menu* para agendar um horário."}
         booking = pending[0]
-        await confirm_with_proof(booking, data.image_base64, data.image_mime or "image/jpeg", "whatsapp", notify_client=False)
+        if booking.get("proof_status") == "em_analise" and booking.get("proof_id"):
+            await set_state("menu")
+            return {
+                "reply": (
+                    "⏳ *Seu comprovante já está em análise.*\n\n"
+                    "Assim que ele for aprovado ou não aprovado, eu te aviso por aqui. 💛\n\n"
+                    f"🔑 Código: {booking['code']}"
+                )
+            }
+        await store_proof_for_review(booking, data.image_base64, data.image_mime or "image/jpeg", "whatsapp", notify_client=False)
         await set_state("menu")
         return {
             "reply": (
-                "✅ *Comprovante recebido!*\n\n"
-                "Seu horário está *CONFIRMADO* ✨\n\n"
+                "📥 *Comprovante recebido!*\n\n"
+                "Ele está *EM ANÁLISE* agora. Assim que for aprovado ou não aprovado, eu te aviso por aqui. 💛\n\n"
                 f"📋 {booking['service_name']}\n"
                 f"📅 {fmt_date_br(booking['date'])} às {booking['time']}\n"
-                f"🔑 Código: {booking['code']}\n\n"
-                "Até lá! 💛 Araújo Deluxe"
+                f"🔑 Código: {booking['code']}"
             )
         }
 
@@ -1865,7 +2034,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
                 f"🔑 Chave PIX: {os.environ['PIX_KEY']}\n\n"
                 "Ou copie o código abaixo (PIX copia e cola):\n\n"
                 f"{pix_code}\n\n"
-                "📸 Depois é só enviar a *foto do comprovante aqui* nesta conversa que eu confirmo na hora!"
+                "📸 Depois é só enviar a *foto do comprovante aqui*. Ele entra em análise e eu te aviso assim que for aprovado ou não aprovado!"
             )
         }
 
