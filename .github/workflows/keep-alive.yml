@@ -21,4 +21,4 @@ jobs:
           set -e
           curl --fail --silent --show-error --max-time 60 \
             --retry 2 --retry-delay 5 \
-            https://dente-de-cobra-api.onrender.com/api/health
+            https://dente-de-cobra-api.onrender.com/api/
