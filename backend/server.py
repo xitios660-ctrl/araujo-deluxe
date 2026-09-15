@@ -2243,7 +2243,8 @@ async def wa_smart_action(
     if service and state in {"book_category", "book_service"}:
         return await wa_select_service_for_booking(service, sdata, phone, set_state)
 
-    daypart = wa_daypart_from_text(text) or sdata.get("daypart")
+    explicit_daypart = wa_daypart_from_text(text)
+    daypart = explicit_daypart or sdata.get("daypart")
     date_str = wa_date_from_sentence(text)
 
     if state in {"book_category", "book_service"} and wa_daypart_from_text(text) and not service and not category:
@@ -2297,8 +2298,8 @@ async def wa_smart_action(
         date_str and (state in {"avail_pick", "book_time"} or previous_asked_availability) and not wants_booking
     )
 
-    if state in {"book_time", "avail_pick"} and daypart and sdata.get("slots"):
-        filtered = filter_slots_by_daypart(sdata.get("slots", []), daypart)
+    if state in {"book_time", "avail_pick"} and explicit_daypart and sdata.get("slots") and not wa_time_from_sentence(text, default_daypart=explicit_daypart):
+        filtered = filter_slots_by_daypart(sdata.get("slots", []), explicit_daypart)
         if not filtered:
             return wa_reply("Nesse período não sobrou horário livre 😔 Quer que eu veja outro período?")
         await set_state(state, {**sdata, "slots": filtered, "daypart": daypart})
