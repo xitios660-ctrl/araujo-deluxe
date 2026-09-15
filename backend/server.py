@@ -36,7 +36,7 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-app = FastAPI()
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 api_router = APIRouter(prefix="/api")
 
 TZ = ZoneInfo("America/Sao_Paulo")
@@ -44,6 +44,20 @@ JWT_ALGORITHM = "HS256"
 PUBLIC_SITE_URL = os.environ.get("PUBLIC_SITE_URL", "https://araujo-deluxe-studio.onrender.com").rstrip("/")
 BOOKING_BUFFER_MINUTES = max(0, int(os.environ.get("BOOKING_BUFFER_MINUTES", "0")))
 STUDIO_ADDRESS = os.environ.get("STUDIO_ADDRESS", "").strip()
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.url.path.startswith(("/api/admin", "/api/auth", "/api/internal")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 # ---------- Business configuration ----------
 WEEKDAY_SLOTS = {
