@@ -2462,6 +2462,7 @@ def wa_step_hint(state: str) -> str:
         "reschedule_pick": "Me diga qual reserva você quer remarcar.",
         "reschedule_date": "Qual nova data você quer?",
         "reschedule_time": "Qual novo horário você prefere?",
+        "payment_pick": "Me diga o número ou código da reserva que você quer consultar.",
     }
     return hints.get(state, "")
 
@@ -2786,6 +2787,63 @@ def wa_generic_prices_text() -> str:
     return "\n".join(lines)
 
 
+def wa_pick_booking_from_candidates(text: str, candidates: List[dict]) -> Optional[dict]:
+    if not candidates:
+        return None
+    t = wa_normalize(text)
+    if t.isdigit() and 1 <= int(t) <= len(candidates):
+        return candidates[int(t) - 1]
+
+    code_match = re.search(r"\bad[- ]?([a-z0-9]{4,12})\b", t)
+    if code_match:
+        wanted = "AD-" + code_match.group(1).upper()
+        found = [b for b in candidates if b.get("code", "").upper() == wanted]
+        if len(found) == 1:
+            return found[0]
+
+    service = wa_service_from_text(text)
+    date_str = wa_date_from_sentence(text)
+    filtered = list(candidates)
+    if service:
+        filtered = [b for b in filtered if b.get("service_id") == service["id"]]
+    if date_str:
+        filtered = [b for b in filtered if b.get("date") == date_str]
+    return filtered[0] if len(filtered) == 1 else None
+
+
+def wa_payment_action_reply(booking: dict, action: str) -> dict:
+    if action == "amount":
+        return wa_reply(
+            f"Para a reserva *{booking['code']}*, o total do procedimento é *R$ {booking['price']}* "
+            f"e o sinal para confirmar é *R$ {booking['deposit']}*. 💛"
+        )
+    if action == "instructions":
+        return wa_reply(
+            f"Para a reserva *{booking['code']}*, o sinal é *R$ {booking['deposit']}* via PIX. "
+            f"Chave: *{os.environ['PIX_KEY']}*. Depois envie o comprovante aqui para análise."
+        )
+    if action == "claim":
+        if booking.get("proof_status") == "em_analise":
+            return wa_reply(
+                f"⏳ O comprovante da reserva *{booking['code']}* já está em análise. "
+                "O pagamento só fica confirmado depois da validação, e eu te aviso aqui."
+            )
+        return wa_reply(
+            f"Entendi 💛 A reserva *{booking['code']}* ainda está *aguardando confirmação do pagamento*. "
+            "Eu não confirmo só pela mensagem “paguei”. Envie a foto do comprovante aqui para entrar em análise."
+        )
+    if action == "proof_status":
+        status = booking.get("proof_status")
+        if status == "em_analise":
+            return wa_reply(f"⏳ O comprovante da reserva *{booking['code']}* está *em análise*. Assim que houver decisão, eu te aviso.")
+        if status == "rejeitado":
+            return wa_reply(f"❌ O comprovante da reserva *{booking['code']}* não foi aprovado. Você pode enviar um novo.")
+        if status == "aprovado" or booking.get("status") == "confirmada":
+            return wa_reply(f"✅ O pagamento da reserva *{booking['code']}* está aprovado e confirmado.")
+        return wa_reply(f"A reserva *{booking['code']}* ainda está aguardando o comprovante do sinal.")
+    return wa_reply("Me diga o código da reserva para eu consultar certinho.")
+
+
 async def wa_resolve_booking_selection(text: str, booking_ids: List[str], phone: str) -> Optional[dict]:
     active = await wa_active_bookings(phone)
     candidates = [b for b in active if b["id"] in set(booking_ids)]
@@ -2821,6 +2879,23 @@ async def wa_priority_action(
     set_state,
 ) -> Optional[dict]:
     t = wa_normalize(text)
+
+    if state == "payment_pick":
+        action = sdata.get("action")
+        booking_ids = set(sdata.get("booking_ids") or [])
+        if wa_no(text):
+            await set_state("menu")
+            return wa_reply("Tudo certo 💛 Não alterei nada.")
+        all_bookings = await wa_find_bookings(phone)
+        candidates = [b for b in all_bookings if b.get("id") in booking_ids]
+        selected = wa_pick_booking_from_candidates(text, candidates)
+        if not selected:
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(candidates[:5], 1))
+            return wa_reply(
+                "Só preciso saber qual reserva 😊 Responda com o *número* ou o *código*:\n\n" + lines
+            )
+        await set_state("menu")
+        return wa_payment_action_reply(selected, action)
 
     # Stateful destructive flows come first, so casual words cannot accidentally
     # start a fresh booking while a cancellation is waiting for confirmation.
@@ -3024,9 +3099,10 @@ async def wa_priority_action(
                 f"e o sinal para confirmar é *R$ {booking['deposit']}*. 💛"
             )
         if len(pending) > 1:
+            await set_state("payment_pick", {"action": "amount", "booking_ids": [b["id"] for b in pending[:5]]})
             lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(pending[:5], 1))
             return wa_reply(
-                "Você tem mais de uma reserva pendente. Me diga qual delas para eu passar o valor certo:\n\n" + lines
+                "Você tem mais de uma reserva pendente. Qual delas? Responda com o *número* ou *código*:\n\n" + lines
             )
 
     payment_claim = any(p in t for p in (
@@ -3040,6 +3116,13 @@ async def wa_priority_action(
             if confirmed:
                 return wa_reply(f"✅ Seu agendamento *{confirmed[0]['code']}* já consta como confirmado.")
             return wa_reply("Não encontrei uma reserva pendente nesse número. Se você acabou de pagar, me manda o código da reserva.")
+        if len(bookings) > 1:
+            await set_state("payment_pick", {"action": "claim", "booking_ids": [b["id"] for b in bookings[:5]]})
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(bookings[:5], 1))
+            return wa_reply(
+                "Você tem mais de uma reserva pendente e eu não quero associar o pagamento à errada 😅 "
+                "Qual delas você pagou?\n\n" + lines + "\n\nResponda com o *número* ou *código*."
+            )
         booking = bookings[0]
         if booking.get("proof_status") == "em_analise":
             return wa_reply(
@@ -3057,17 +3140,21 @@ async def wa_priority_action(
     if any(p in t for p in ("como pago", "como eu pago", "onde pago", "qual pix", "manda o pix")):
         pending = await wa_find_bookings(phone, only_pending=True)
         if len(pending) == 1:
-            booking = pending[0]
-            return wa_reply(
-                f"Para a reserva *{booking['code']}*, o sinal é *R$ {booking['deposit']}* via PIX. "
-                f"Chave: *{os.environ['PIX_KEY']}*. Depois envie o comprovante aqui para análise."
-            )
+            return wa_payment_action_reply(pending[0], "instructions")
+        if len(pending) > 1:
+            await set_state("payment_pick", {"action": "instructions", "booking_ids": [b["id"] for b in pending[:5]]})
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(pending[:5], 1))
+            return wa_reply("Qual reserva você quer pagar?\n\n" + lines + "\n\nResponda com o *número* ou *código*.")
 
     if wa_is_proof_status_intent(text):
         bookings = await wa_find_bookings(phone)
         with_proof = [b for b in bookings if b.get("proof_id") or b.get("proof_status")]
         if not with_proof:
             return wa_reply("Não encontrei nenhum comprovante enviado por este número.")
+        if len(with_proof) > 1:
+            await set_state("payment_pick", {"action": "proof_status", "booking_ids": [b["id"] for b in with_proof[:5]]})
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(with_proof[:5], 1))
+            return wa_reply("Encontrei mais de um comprovante. Qual reserva você quer consultar?\n\n" + lines)
         booking = with_proof[0]
         status = booking.get("proof_status")
         if status == "em_analise":

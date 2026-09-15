@@ -129,6 +129,49 @@ class PaymentFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("comprovante", reply)
         self.assertNotIn("pagamento aprovado", reply)
 
+    async def test_paid_message_with_multiple_pending_bookings_asks_which_one(self):
+        b1 = booking()
+        b2 = {**booking(), "id": "booking-87654321", "code": "AD-OTHER1234", "time": "17:00"}
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={"state": "menu", "data": {}})
+        fake.wa_sessions.update_one = AsyncMock()
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=[b1, b2])
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="paguei", push_name="Cliente"),
+                auth={"test": True},
+            )
+        self.assertIn("qual delas", result["reply"].lower())
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "payment_pick")
+        self.assertEqual(update["data"]["action"], "claim")
+
+    async def test_payment_pick_accepts_reservation_code(self):
+        b1 = booking()
+        b2 = {**booking(), "id": "booking-87654321", "code": "AD-OTHER1234", "time": "17:00"}
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={
+            "state": "payment_pick",
+            "data": {"action": "claim", "booking_ids": [b1["id"], b2["id"]]},
+        })
+        fake.wa_sessions.update_one = AsyncMock()
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=[b1, b2])
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="AD-OTHER1234", push_name="Cliente"),
+                auth={"test": True},
+            )
+        self.assertIn("ad-other1234", result["reply"].lower())
+        self.assertIn("aguardando confirmação", result["reply"].lower())
+
     async def test_multiple_pending_bookings_do_not_guess_proof_target(self):
         b1 = booking()
         b2 = {**booking(), "id": "booking-87654321", "code": "AD-OTHER1", "time": "17:00"}
