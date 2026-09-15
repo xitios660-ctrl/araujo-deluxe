@@ -1,31 +1,15 @@
 services:
   - type: web
-    name: araujo-deluxe-api
+    name: araujo-deluxe
     runtime: python
     plan: free
     rootDir: .
-    buildCommand: bash backend/build.sh
-    startCommand: uvicorn server:app --app-dir backend --host 0.0.0.0 --port $PORT
+    buildCommand: bash backend/build-frontend.sh
+    startCommand: uvicorn frontend_server:app --app-dir backend --host 0.0.0.0 --port $PORT
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
       - key: NODE_VERSION
         value: "22.16.0"
-      - key: MONGO_URL
-        sync: false          # connection string do MongoDB Atlas (ja configurada)
-      - key: DB_NAME
-        value: araujo_deluxe
-      - key: JWT_SECRET
-        generateValue: true
-      - key: ADMIN_EMAIL
-        value: texeirakelvin74@gmail.com
-      - key: ADMIN_PASSWORD
-        sync: false          # Preserve a senha configurada no servidor
-      - key: CORS_ORIGINS
-        value: https://xitios660-ctrl.github.io
-      - key: PIX_KEY
-        value: texeirakelvin74@gmail.com
-      - key: WHATSAPP_NUMBER
-        value: "5511999999999"
-      - key: OWNER_WHATSAPP
-        value: "5511999999999"
-      - key: WHATSAPP_BOT_URL
-        value: http://localhost:3002
+      - key: BACKEND_ORIGIN
+        value: https://dente-de-cobra-api.onrender.com
