@@ -1774,6 +1774,18 @@ def resolve_requested_slot(text: str, slots: List[str], daypart: Optional[str] =
     return None
 
 
+def wa_is_availability_intent(text: str) -> bool:
+    t = wa_normalize(text)
+    phrases = (
+        "tem horario", "tem horarios", "tem vaga", "tem vagas",
+        "horario livre", "horarios livres", "disponivel", "disponiveis",
+        "qual horario", "quais horarios", "que horario", "que horarios",
+        "horarios tem", "horario voce tem", "horarios voce tem",
+        "horario vc tem", "horarios vc tem",
+    )
+    return any(p in t for p in phrases)
+
+
 def wa_recommended_service(text: str) -> Optional[dict]:
     t = wa_normalize(text)
     if any(x in t for x in ("delicado", "delicada", "natural", "discreto", "leve")):
@@ -2280,8 +2292,7 @@ async def wa_smart_action(
         date_str = sdata.get("date")
     time_str = wa_time_from_sentence(text, default_daypart=daypart)
     wants_booking = any(x in t for x in ("agendar", "marcar", "quero fazer", "quero esse", "quero essa", "pode ser"))
-    asks_availability = any(x in t for x in (
-        "tem horario", "tem vaga", "horario livre", "disponivel",
+    asks_availability = wa_is_availability_intent(text) or any(x in t for x in (
         "tem amanha", "tem hoje", "tem para", "tem pro dia", "tem no dia",
     ))
 
@@ -2399,7 +2410,7 @@ async def wa_smart_action(
                 f"Tenho sim 😊 *{service['name']}* em *{fmt_date_br(date_str)} às {time_str}*. "
                 "Me manda seu *nome completo* que eu fecho a reserva."
             )
-        await set_state("book_time", {"service_id": service["id"], "date": date_str, "slots": available})
+        await set_state("book_time", {"service_id": service["id"], "date": date_str, "slots": available, "daypart": daypart})
         return wa_reply(
             f"Tenho horário pra *{service['name']}* em *{fmt_date_br(date_str)}* 💛 Escolhe o melhor:",
             wa_slots_ui(date_str, available),
@@ -2588,7 +2599,7 @@ async def wa_natural_reply(text: str, state: str = "menu", phone: str = "", memo
     if any(x in t for x in ("faz sobrancelha", "trabalha com sobrancelha", "tem sobrancelha")):
         return "Faço sim ✨💛 Tem Design com Henna, Brow Lamination e Design Simples. Me fala qual te interessa que eu te passo tudo certinho."
 
-    asks_availability = any(x in t for x in ("tem horario", "tem vaga", "horario livre", "disponivel"))
+    asks_availability = wa_is_availability_intent(text)
     if asks_availability:
         return "Consigo olhar pra você sim 💛 Qual dia você quer? Pode mandar *16/09*, *dia 16*, *quarta*, *amanhã* ou *depois de amanhã*."
 
