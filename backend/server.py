@@ -435,10 +435,13 @@ async def create_booking_record(
             "client_phone_digits": phone_digits,
             "notes": notes.strip(),
             "status": "pendente" if deposit > 0 else "confirmada",
+            "payment_status": "aguardando_comprovante" if deposit > 0 else "nao_exigido",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.bookings.insert_one({**booking})
         logging.getLogger(__name__).info("BOOKING_CREATED booking_id=%s service=%s date=%s time=%s", booking_id[:8], service_id, date_str, time_str)
+        if deposit > 0:
+            logging.getLogger(__name__).info("PAYMENT_CREATED booking_id=%s amount=%s", booking_id[:8], deposit)
         return booking
     finally:
         await release_booking_slot(date_str, time_str, locked_slots)
@@ -859,17 +862,32 @@ async def store_proof_for_review(booking: dict, data_base64: str, mime: str, sou
         "created_at": now,
     }
     await db.proofs.insert_one({**proof})
-    await db.bookings.update_one(
-        {"id": booking["id"]},
+    attached = await db.bookings.update_one(
+        {
+            "id": booking["id"],
+            "status": "pendente",
+            "proof_status": {"$ne": "em_analise"},
+        },
         {
             "$set": {
-                "status": "pendente",
                 "proof_id": proof["id"],
                 "proof_status": "em_analise",
+                "payment_status": "em_analise",
                 "proof_uploaded_at": now,
             },
             "$unset": {"proof_reviewed_at": "", "proof_reviewed_by": ""},
         },
+    )
+    if attached.matched_count == 0:
+        await db.proofs.delete_one({"id": proof["id"]})
+        current = await db.bookings.find_one({"id": booking["id"]}, {"_id": 0})
+        if current and current.get("proof_status") == "em_analise" and current.get("proof_id"):
+            return current["proof_id"]
+        raise HTTPException(status_code=409, detail="Este agendamento não aceita este comprovante agora.")
+
+    logging.getLogger(__name__).info(
+        "RECEIPT_RECEIVED booking_id=%s proof_id=%s source=%s",
+        booking["id"][:8], proof["id"][:8], source,
     )
 
     date_br = fmt_date_br(booking["date"])
@@ -970,7 +988,7 @@ async def get_proof(proof_id: str, user: dict = Depends(get_current_user)):
     return proof
 
 
-async def _get_reviewable_proof(proof_id: str):
+async def _get_proof_booking(proof_id: str):
     proof = await db.proofs.find_one({"id": proof_id}, {"_id": 0})
     if not proof:
         raise HTTPException(status_code=404, detail="Comprovante não encontrado")
@@ -979,47 +997,82 @@ async def _get_reviewable_proof(proof_id: str):
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
     if booking.get("proof_id") != proof_id:
         raise HTTPException(status_code=409, detail="Este não é mais o comprovante atual deste agendamento.")
-    if booking.get("status") != "pendente" or booking.get("proof_status") != "em_analise":
-        raise HTTPException(status_code=409, detail="Este comprovante não está mais aguardando análise.")
     return proof, booking
+
+
+async def _review_proof(proof_id: str, approved: bool, user: dict):
+    proof, booking = await _get_proof_booking(proof_id)
+    desired_proof = "aprovado" if approved else "rejeitado"
+    desired_booking = "confirmada" if approved else "pendente"
+    desired_payment = "confirmado" if approved else "rejeitado"
+
+    if booking.get("proof_status") == desired_proof and (
+        (approved and booking.get("status") == "confirmada")
+        or (not approved and booking.get("status") == "pendente")
+    ):
+        return {
+            "ok": True,
+            "status": desired_booking,
+            "proof_status": desired_proof,
+            "payment_status": desired_payment,
+            "notification_sent": None,
+        }
+
+    if booking.get("status") != "pendente" or booking.get("proof_status") != "em_analise":
+        raise HTTPException(status_code=409, detail="Este comprovante já foi analisado ou não está mais ativo.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    claimed = await db.bookings.update_one(
+        {
+            "id": booking["id"],
+            "proof_id": proof_id,
+            "status": "pendente",
+            "proof_status": "em_analise",
+        },
+        {"$set": {
+            "status": desired_booking,
+            "proof_status": desired_proof,
+            "payment_status": desired_payment,
+            "proof_reviewed_at": now,
+            "proof_reviewed_by": user["id"],
+        }},
+    )
+    if claimed.matched_count == 0:
+        current = await db.bookings.find_one({"id": booking["id"]}, {"_id": 0})
+        if current and current.get("proof_status") == desired_proof:
+            return {
+                "ok": True,
+                "status": current.get("status"),
+                "proof_status": current.get("proof_status"),
+                "payment_status": current.get("payment_status"),
+                "notification_sent": None,
+            }
+        raise HTTPException(status_code=409, detail="Este comprovante acabou de ser analisado em outra ação.")
+
+    await db.proofs.update_one(
+        {"id": proof_id, "status": "em_analise"},
+        {"$set": {"status": desired_proof, "reviewed_at": now, "reviewed_by": user["id"]}},
+    )
+    event = "PAYMENT_CONFIRMED" if approved else "PAYMENT_FAILED"
+    logging.getLogger(__name__).info("%s booking_id=%s proof_id=%s", event, booking["id"][:8], proof_id[:8])
+    sent = await notify_proof_review_result(booking, approved)
+    return {
+        "ok": True,
+        "status": desired_booking,
+        "proof_status": desired_proof,
+        "payment_status": desired_payment,
+        "notification_sent": sent,
+    }
 
 
 @api_router.post("/admin/proofs/{proof_id}/approve")
 async def approve_proof(proof_id: str, user: dict = Depends(get_current_user)):
-    proof, booking = await _get_reviewable_proof(proof_id)
-    if proof.get("status") == "aprovado" and booking.get("status") == "confirmada":
-        return {"ok": True, "status": "confirmada", "proof_status": "aprovado", "notification_sent": None}
-
-    now = datetime.now(timezone.utc).isoformat()
-    await db.proofs.update_one(
-        {"id": proof_id},
-        {"$set": {"status": "aprovado", "reviewed_at": now, "reviewed_by": user["id"]}},
-    )
-    await db.bookings.update_one(
-        {"id": booking["id"]},
-        {"$set": {"status": "confirmada", "proof_status": "aprovado", "proof_reviewed_at": now, "proof_reviewed_by": user["id"]}},
-    )
-    sent = await notify_proof_review_result(booking, True)
-    return {"ok": True, "status": "confirmada", "proof_status": "aprovado", "notification_sent": sent}
+    return await _review_proof(proof_id, True, user)
 
 
 @api_router.post("/admin/proofs/{proof_id}/reject")
 async def reject_proof(proof_id: str, user: dict = Depends(get_current_user)):
-    proof, booking = await _get_reviewable_proof(proof_id)
-    if proof.get("status") == "rejeitado" and booking.get("proof_status") == "rejeitado":
-        return {"ok": True, "status": "pendente", "proof_status": "rejeitado", "notification_sent": None}
-
-    now = datetime.now(timezone.utc).isoformat()
-    await db.proofs.update_one(
-        {"id": proof_id},
-        {"$set": {"status": "rejeitado", "reviewed_at": now, "reviewed_by": user["id"]}},
-    )
-    await db.bookings.update_one(
-        {"id": booking["id"]},
-        {"$set": {"status": "pendente", "proof_status": "rejeitado", "proof_reviewed_at": now, "proof_reviewed_by": user["id"]}},
-    )
-    sent = await notify_proof_review_result(booking, False)
-    return {"ok": True, "status": "pendente", "proof_status": "rejeitado", "notification_sent": sent}
+    return await _review_proof(proof_id, False, user)
 
 
 @api_router.get("/admin/whatsapp/status")
@@ -2636,6 +2689,40 @@ async def wa_priority_action(
         lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(active, 1))
         return wa_reply("Qual destes você quer remarcar?\n\n" + lines + "\n\nResponda com o *número* ou código.")
 
+    payment_claim = any(p in t for p in (
+        "ja paguei", "paguei", "fiz o pix", "acabei de pagar", "transferi",
+        "mandei o pix", "pagamento feito",
+    ))
+    if payment_claim:
+        bookings = await wa_find_bookings(phone, only_pending=True)
+        if not bookings:
+            confirmed = [b for b in await wa_find_bookings(phone) if b.get("status") == "confirmada"]
+            if confirmed:
+                return wa_reply(f"✅ Seu agendamento *{confirmed[0]['code']}* já consta como confirmado.")
+            return wa_reply("Não encontrei uma reserva pendente nesse número. Se você acabou de pagar, me manda o código da reserva.")
+        booking = bookings[0]
+        if booking.get("proof_status") == "em_analise":
+            return wa_reply(
+                f"⏳ Vi que o comprovante da reserva *{booking['code']}* já está em análise. "
+                "O pagamento só fica confirmado depois da validação, e eu te aviso aqui."
+            )
+        return wa_reply(
+            f"Entendi 💛 A reserva *{booking['code']}* ainda está *aguardando confirmação do pagamento*. "
+            "Eu não confirmo só pela mensagem “paguei”. Envie a foto do comprovante aqui para entrar em análise."
+        )
+
+    if any(p in t for p in ("vou mandar o comprovante", "vou enviar o comprovante", "mandar comprovante", "enviar comprovante")):
+        return wa_reply("Pode mandar a foto do comprovante aqui 💛 Eu associo à reserva e deixo como *em análise* até a validação.")
+
+    if any(p in t for p in ("como pago", "como eu pago", "onde pago", "qual pix", "manda o pix")):
+        pending = await wa_find_bookings(phone, only_pending=True)
+        if len(pending) == 1:
+            booking = pending[0]
+            return wa_reply(
+                f"Para a reserva *{booking['code']}*, o sinal é *R$ {booking['deposit']}* via PIX. "
+                f"Chave: *{os.environ['PIX_KEY']}*. Depois envie o comprovante aqui para análise."
+            )
+
     if wa_is_proof_status_intent(text):
         bookings = await wa_find_bookings(phone)
         with_proof = [b for b in bookings if b.get("proof_id") or b.get("proof_status")]
@@ -2784,7 +2871,23 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         pending = await wa_find_bookings(phone, only_pending=True)
         if not pending:
             return {"reply": "Não encontrei nenhuma reserva aguardando comprovante para este número. 🤔\nDigite *menu* para agendar um horário."}
-        booking = pending[0]
+
+        booking = None
+        code_match = re.search(r"\bAD[- ]?([A-Za-z0-9]{4,10})\b", text, re.IGNORECASE)
+        if code_match:
+            wanted = "AD-" + code_match.group(1).upper()
+            booking = next((b for b in pending if b.get("code", "").upper() == wanted), None)
+        if booking is None and len(pending) == 1:
+            booking = pending[0]
+        if booking is None:
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(pending[:5], 1))
+            return {
+                "reply": (
+                    "Você tem mais de uma reserva aguardando pagamento e eu não quero colocar o comprovante na errada 😅\n\n"
+                    + lines
+                    + "\n\nMe diga o *código da reserva* e envie o comprovante novamente."
+                )
+            }
         if booking.get("proof_status") == "em_analise" and booking.get("proof_id"):
             await set_state("menu")
             return {

@@ -256,8 +256,9 @@ export default function AdminDashboard() {
                       <td className="py-3.5 pr-4">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_STYLE[b.status]}`}>{b.status}</span>
-                          {b.proof_status === "em_analise" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-sky-100 text-sky-800">comprovante em análise</span>}
-                          {b.proof_status === "rejeitado" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">comprovante não aprovado</span>}
+                          {b.proof_status === "em_analise" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-sky-100 text-sky-800">pagamento em análise</span>}
+                          {b.proof_status === "rejeitado" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">pagamento não aprovado</span>}
+                          {b.payment_status === "confirmado" && <span className="rounded-full px-3 py-1 text-xs font-semibold bg-emerald-100 text-emerald-800">pagamento aprovado</span>}
                           {b.proof_id && (
                             <button onClick={() => viewProof(b)} title="Ver comprovante" className="text-primary hover:scale-110 transition-transform duration-200" data-testid={`admin-proof-${b.code}`}>
                               <Receipt size={19} weight="duotone" />
