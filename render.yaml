@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: araujo-deluxe
+    name: araujo-deluxe-api
     runtime: python
     plan: free
     rootDir: .
