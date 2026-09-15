@@ -99,7 +99,6 @@ class BotProcess:
             await self._clear_test_clients_once(db)
             while True:
                 try:
-                    await self._process_owner_review_command(db)
                     if reminder_tick <= 0:
                         await self._send_due_reminders(db)
                         reminder_tick = 60
