@@ -499,5 +499,36 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
         fake.wa_sessions.update_one.assert_not_awaited()
 
 
+
+
+    def test_natural_time_variants_and_dayparts(self):
+        self.assertEqual(server.wa_time_from_sentence("umas 3 da tarde"), "15:00")
+        self.assertEqual(server.wa_time_from_sentence("3 da tarde"), "15:00")
+        self.assertEqual(server.wa_time_from_sentence("15h"), "15:00")
+        self.assertEqual(server.wa_time_from_sentence("15", allow_bare=True), "15:00")
+        self.assertEqual(server.wa_time_from_sentence("3", default_daypart="afternoon", allow_bare=True), "15:00")
+        self.assertEqual(server.wa_daypart_from_text("mais pro final da tarde"), "late_afternoon")
+
+    def test_daypart_filter_and_same_hour_resolution(self):
+        slots = ["09:00", "11:00", "15:30", "17:00"]
+        self.assertEqual(server.filter_slots_by_daypart(slots, "morning"), ["09:00", "11:00"])
+        self.assertEqual(server.filter_slots_by_daypart(slots, "afternoon"), ["15:30", "17:00"])
+        self.assertEqual(server.resolve_requested_slot("quero o das 15", slots), "15:30")
+
+    async def test_first_time_lashes_gets_safe_recommendation(self):
+        result, _ = await self.call("é minha primeira vez com cílios")
+        self.assertIn("Volume Brasileiro", result["reply"])
+        self.assertIn("natural", result["reply"].lower())
+
+    async def test_longest_procedure_question(self):
+        result, _ = await self.call("qual procedimento dura mais?")
+        self.assertIn("2h30", result["reply"])
+
+    async def test_address_is_not_invented_when_unconfigured(self):
+        with patch.object(server, "STUDIO_ADDRESS", ""):
+            result, _ = await self.call("onde fica?")
+        self.assertIn("não tenho o endereço cadastrado", result["reply"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

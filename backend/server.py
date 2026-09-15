@@ -43,6 +43,7 @@ TZ = ZoneInfo("America/Sao_Paulo")
 JWT_ALGORITHM = "HS256"
 PUBLIC_SITE_URL = os.environ.get("PUBLIC_SITE_URL", "https://araujo-deluxe-studio.onrender.com").rstrip("/")
 BOOKING_BUFFER_MINUTES = max(0, int(os.environ.get("BOOKING_BUFFER_MINUTES", "0")))
+STUDIO_ADDRESS = os.environ.get("STUDIO_ADDRESS", "").strip()
 
 # ---------- Business configuration ----------
 WEEKDAY_SLOTS = {
@@ -1345,7 +1346,6 @@ def wa_date_from_sentence(text: str, now: Optional[datetime] = None) -> Optional
     t = wa_normalize(text)
     now = now or datetime.now(TZ)
 
-    # Order matters: "depois de amanhã" also contains the word "amanhã".
     if re.search(r"\bdepois\s+de\s+amanha\b", t):
         return (now + timedelta(days=2)).strftime("%Y-%m-%d")
     if re.search(r"\bamanha\b", t):
@@ -1357,7 +1357,6 @@ def wa_date_from_sentence(text: str, now: Optional[datetime] = None) -> Optional
     if match:
         return parse_br_date(match.group(0))
 
-    # Natural follow-ups: "e dia 16?", "pro dia 3", "dia 28 tem horário?"
     day_match = re.search(r"\b(?:dia|pro dia|para o dia|para dia)\s+(\d{1,2})\b", t)
     if day_match:
         day = int(day_match.group(1))
@@ -1383,27 +1382,110 @@ def wa_date_from_sentence(text: str, now: Optional[datetime] = None) -> Optional
         "sabado": 5,
         "domingo": 6,
     }
+    extra_week = any(p in t for p in ("outra semana", "semana seguinte", "da outra semana"))
     for label, target in sorted(weekdays.items(), key=lambda item: len(item[0]), reverse=True):
         if re.search(rf"\b{re.escape(label)}\b", t):
             delta = (target - now.weekday()) % 7
             if delta == 0:
                 delta = 7
+            if extra_week:
+                delta += 7
             return (now + timedelta(days=delta)).strftime("%Y-%m-%d")
     return None
 
 
-def wa_time_from_sentence(text: str) -> Optional[str]:
+def wa_daypart_from_text(text: str) -> Optional[str]:
     t = wa_normalize(text)
+    if any(p in t for p in ("final da tarde", "fim da tarde", "mais pro final da tarde", "mais para o final da tarde")):
+        return "late_afternoon"
+    if any(p in t for p in ("de manha", "da manha", "pela manha", "cedo")):
+        return "morning"
+    if any(p in t for p in ("de tarde", "da tarde", "pela tarde", "a tarde")):
+        return "afternoon"
+    if any(p in t for p in ("de noite", "da noite", "pela noite", "a noite")):
+        return "evening"
+    return None
+
+
+def wa_time_from_sentence(text: str, default_daypart: Optional[str] = None, allow_bare: bool = False) -> Optional[str]:
+    t = wa_normalize(text)
+    if "meio dia" in t:
+        return "12:00"
+    if "meia noite" in t:
+        return "00:00"
+
+    natural = re.search(r"\b(?:umas?\s+)?(\d{1,2})(?:\s+e\s+meia)?\s+(?:da|de)\s+(manha|tarde|noite)\b", t)
+    if natural:
+        hour = int(natural.group(1))
+        minute = 30 if "e meia" in natural.group(0) else 0
+        period = natural.group(2)
+        if period in {"tarde", "noite"} and 1 <= hour <= 11:
+            hour += 12
+        if period == "manha" and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23:
+            return f"{hour:02d}:{minute:02d}"
+
     match = re.search(r"\b(\d{1,2})(?::(\d{2})|h(?:(\d{2}))?)\b", t)
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2) or match.group(3) or 0)
+        part = wa_daypart_from_text(text) or default_daypart
+        if part in {"afternoon", "late_afternoon", "evening"} and 1 <= hour <= 11:
+            hour += 12
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             return f"{hour:02d}:{minute:02d}"
+
+    hinted = re.search(r"\b(?:umas?|por volta das?|la pras?|la para as?|as|das)\s+(\d{1,2})(?::(\d{2}))?\b", t)
+    if hinted:
+        hour = int(hinted.group(1))
+        minute = int(hinted.group(2) or 0)
+        part = wa_daypart_from_text(text) or default_daypart
+        if part in {"afternoon", "late_afternoon", "evening"} and 1 <= hour <= 11:
+            hour += 12
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+
+    if allow_bare and re.fullmatch(r"\d{1,2}", t):
+        hour = int(t)
+        if default_daypart in {"afternoon", "late_afternoon", "evening"} and 1 <= hour <= 11:
+            hour += 12
+        if 0 <= hour <= 23:
+            return f"{hour:02d}:00"
     return None
 
 
-def wa_recommended_service(text: str) -> Optional[dict]:
+def filter_slots_by_daypart(slots: List[str], daypart: Optional[str]) -> List[str]:
+    if not daypart:
+        return list(slots)
+    result = []
+    for slot in slots:
+        minute = time_to_minutes(slot)
+        if daypart == "morning" and minute < 12 * 60:
+            result.append(slot)
+        elif daypart == "afternoon" and 12 * 60 <= minute < 18 * 60:
+            result.append(slot)
+        elif daypart == "late_afternoon" and 16 * 60 <= minute < 19 * 60:
+            result.append(slot)
+        elif daypart == "evening" and minute >= 18 * 60:
+            result.append(slot)
+    return result
+
+
+def resolve_requested_slot(text: str, slots: List[str], daypart: Optional[str] = None) -> Optional[str]:
+    requested = wa_time_from_sentence(text, default_daypart=daypart, allow_bare=True)
+    if not requested:
+        return None
+    if requested in slots:
+        return requested
+    hour = requested.split(":")[0]
+    same_hour = [slot for slot in slots if slot.startswith(hour + ":")]
+    if len(same_hour) == 1:
+        return same_hour[0]
+    return None
+
+
+def wa_recommended_service(def wa_recommended_service(text: str) -> Optional[dict]:
     t = wa_normalize(text)
     if any(x in t for x in ("delicado", "delicada", "natural", "discreto", "leve")):
         return SERVICES_BY_ID["brasileiro"]
@@ -1552,6 +1634,37 @@ async def wa_conversation_action(
     t = wa_normalize(text)
     if not t:
         return None
+
+    if any(p in t for p in ("onde fica", "qual endereco", "qual o endereco", "endereco do studio", "localizacao", "como chegar")):
+        if STUDIO_ADDRESS:
+            return wa_reply(f"📍 Ficamos em: *{STUDIO_ADDRESS}*")
+        return wa_reply(
+            "Ainda não tenho o endereço cadastrado aqui com segurança 😅 Prefiro não inventar. "
+            "Posso avisar a responsável para te passar a localização certinha."
+        )
+
+    if any(p in t for p in ("qual procedimento dura mais", "qual dura mais", "mais demorado", "maior duracao")):
+        max_minutes = max(service_duration_minutes(s["id"]) for s in SERVICES)
+        longest = [s for s in SERVICES if service_duration_minutes(s["id"]) == max_minutes]
+        names = ", ".join(f"*{s['name']}*" for s in longest)
+        return wa_reply(f"Os procedimentos mais longos são {names}, com cerca de *{longest[0]['duration']}*.")
+
+    if any(p in t for p in ("minha primeira vez", "primeira vez", "nunca fiz")):
+        category = wa_category_from_context(text, memory, sdata)
+        if category == "cilios" or "cilio" in t:
+            service = SERVICES_BY_ID["brasileiro"]
+            await wa_update_memory_profile(phone, service_id=service["id"])
+            return wa_reply(
+                f"Pra primeira vez, eu começaria pelo *{service['name']}* 💛 Ele tem um efeito mais natural e delicado. "
+                f"Fica R$ {service['price']}, sinal R$ {service['deposit']} e leva em média {service['duration']}. "
+                "Se você quiser algo mais marcante, eu também posso te mostrar outras opções."
+            )
+        return wa_reply("Claro 💛 É sua primeira vez com *cílios, unhas ou sobrancelhas*? Me fala qual e eu te indico uma opção tranquila.")
+
+    date_mentioned = wa_date_from_sentence(text)
+    if date_mentioned and any(p in t for p in ("nao consigo", "nao posso", "nao vou conseguir", "nao vou poder")) and state in {"book_date", "book_time", "book_name"}:
+        await set_state("book_date", {"service_id": sdata.get("service_id")})
+        return wa_reply("Sem problema 💛 Não vou usar essa data. Qual outro dia fica melhor pra você?")
 
     # Site intent is explicit and always wins over starting another booking flow.
     if any(p in t for p in (
@@ -1721,6 +1834,8 @@ async def wa_smart_action(
 
     service = wa_service_from_text(text)
     remembered_service = wa_memory_service(memory)
+    if not service and state in {"book_date", "book_time", "book_name"} and sdata.get("service_id") in SERVICES_BY_ID:
+        service = SERVICES_BY_ID[sdata["service_id"]]
 
     category = None
     if re.search(r"\bcilios?\b", t):
@@ -1782,8 +1897,11 @@ async def wa_smart_action(
             + wa_site_cta("Se quiser reservar sem continuar a conversa")
         )
 
+    daypart = wa_daypart_from_text(text) or sdata.get("daypart")
     date_str = wa_date_from_sentence(text)
-    time_str = wa_time_from_sentence(text)
+    if not date_str and state in {"book_time", "avail_pick"} and daypart:
+        date_str = sdata.get("date")
+    time_str = wa_time_from_sentence(text, default_daypart=daypart)
     wants_booking = any(x in t for x in ("agendar", "marcar", "quero fazer", "quero esse", "quero essa", "pode ser"))
     asks_availability = any(x in t for x in (
         "tem horario", "tem vaga", "horario livre", "disponivel",
@@ -1797,12 +1915,36 @@ async def wa_smart_action(
         "horarios", "horário", "vaga",
     ))
     availability_followup = bool(
-        date_str and (state == "avail_pick" or previous_asked_availability) and not wants_booking
+        date_str and (state in {"avail_pick", "book_time"} or previous_asked_availability) and not wants_booking
     )
 
-    # Availability does not require choosing a procedure first. The website and
-    # WhatsApp consult the same day/slot source of truth.
+    if state in {"book_time", "avail_pick"} and daypart and sdata.get("slots"):
+        filtered = filter_slots_by_daypart(sdata.get("slots", []), daypart)
+        if not filtered:
+            return wa_reply("Nesse período não sobrou horário livre 😔 Quer que eu veja outro período?")
+        await set_state(state, {**sdata, "slots": filtered, "daypart": daypart})
+        return wa_reply(
+            "Nesse período tenho: " + ", ".join(filtered) + ". Qual você prefere?",
+            wa_slots_ui(sdata.get("date"), filtered) if sdata.get("date") else None,
+        )
+
+    # Duration changes the real availability. Without a procedure, preserve the
+    # requested date and ask one short question instead of promising a bad slot.
     if date_str and not service and (asks_availability or availability_followup):
+        day = await get_day_availability(date_str)
+        if not day["scheduled_open"]:
+            return wa_reply(f"Em *{fmt_date_br(date_str)}* é {day['weekday_name']} e o estúdio não abre 😔")
+        if not day["open"]:
+            return wa_reply(f"Em *{fmt_date_br(date_str)}* o estúdio está fechado 😔 {day['closed_reason'] or ''}")
+        await set_state("book_category", {"date": date_str, "daypart": daypart})
+        period = " nesse período" if daypart else ""
+        return wa_reply(
+            f"Consigo olhar *{fmt_date_br(date_str)}*{period} 💛 Só me diz qual procedimento você quer, "
+            "porque a duração muda os horários que realmente encaixam.",
+            wa_category_ui(),
+        )
+
+    if False and date_str and not service and (asks_availability or availability_followup):
         day = await get_day_availability(date_str)
         if not day["scheduled_open"]:
             return wa_reply(
@@ -1841,15 +1983,16 @@ async def wa_smart_action(
             + wa_site_cta("Se preferir escolher e reservar pelo site")
         )
 
-    if service and date_str and (wants_booking or asks_availability or state == "menu"):
+    if service and date_str and (wants_booking or asks_availability or state in {"menu", "book_date", "book_time", "book_name"}):
         day = await get_day_availability(date_str, service_id=service["id"])
         if not day["scheduled_open"]:
             return wa_reply(f"Em *{fmt_date_br(date_str)}* é {day['weekday_name']} e o estúdio não abre 😔 Me fala outro dia.")
         if not day["open"]:
             return wa_reply(f"Em *{fmt_date_br(date_str)}* o estúdio está *fechado/bloqueado* 😔 {day['closed_reason'] or ''} Me fala outro dia.")
-        available = [s["time"] for s in day["slots"] if s["available"]]
+        available = filter_slots_by_daypart([s["time"] for s in day["slots"] if s["available"]], daypart)
         if not available:
-            return wa_reply(f"Pra *{fmt_date_br(date_str)}* todos os horários já estão ocupados 😔 Me fala outro dia que eu olho.")
+            suffix = " nesse período" if daypart else ""
+            return wa_reply(f"Pra *{fmt_date_br(date_str)}* não tenho horário livre{suffix} para *{service['name']}* 😔 Quer outro período ou outro dia?")
         await wa_update_memory_profile(phone, service_id=service["id"])
         if time_str:
             if time_str not in available:
@@ -2743,7 +2886,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
     if state == "avail_pick":
         date_str = sdata.get("date")
         slots = sdata.get("slots", [])
-        requested_time = wa_time_from_sentence(text) or lower.replace("h", ":").strip()
+        requested_time = resolve_requested_slot(text, slots, sdata.get("daypart")) or lower.replace("h", ":").strip()
         if re.fullmatch(r"\d{1,2}:", requested_time):
             requested_time += "00"
         if requested_time in slots:
@@ -2856,7 +2999,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
 
     if state == "book_time":
         slots = sdata.get("slots", [])
-        requested_time = wa_time_from_sentence(text) or lower.replace("h", ":").strip()
+        requested_time = resolve_requested_slot(text, slots, sdata.get("daypart")) or lower.replace("h", ":").strip()
         if re.fullmatch(r"\d{1,2}:", requested_time):
             requested_time += "00"
         if requested_time in slots:
@@ -2870,11 +3013,17 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         )
 
     if state == "book_name":
-        if len(text) < 2:
-            return {"reply": "Digite seu *nome completo*, por favor. 😊"}
+        clean_booking_name = wa_clean_name(text)
+        name_words = (clean_booking_name or "").split()
+        if (
+            not clean_booking_name
+            or len(name_words) > 4
+            or any(word in wa_normalize(text) for word in ("marcar", "agendar", "horario", "pagar", "comprovante", "site"))
+        ):
+            return {"reply": "Só falta seu *nome* 😊 Pode me mandar seu nome e sobrenome."}
         try:
-            await wa_update_memory_profile(phone, name=text, service_id=sdata.get("service_id"))
-            booking = await wa_create_booking(sdata["service_id"], sdata["date"], sdata["time"], text, phone)
+            await wa_update_memory_profile(phone, name=clean_booking_name, service_id=sdata.get("service_id"))
+            booking = await wa_create_booking(sdata["service_id"], sdata["date"], sdata["time"], clean_booking_name, phone)
         except ValueError as exc:
             await set_state("book_date", {"service_id": sdata.get("service_id")})
             if str(exc) == "closed_day":
