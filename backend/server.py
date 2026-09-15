@@ -1726,6 +1726,8 @@ async def wa_active_bookings(phone: str) -> List[dict]:
 
 def wa_is_cancel_intent(text: str) -> bool:
     t = wa_normalize(text)
+    if any(p in t for p in ("nao quero cancelar", "nao cancela", "nao cancele", "sem cancelar")):
+        return False
     phrases = (
         "cancelar", "cancela", "cancele", "cancelamento",
         "desmarcar", "desmarca", "desmarque",
@@ -1768,6 +1770,7 @@ def wa_is_proof_status_intent(text: str) -> bool:
 
 def wa_yes(text: str) -> bool:
     t = wa_normalize(text)
+    t = " ".join(re.sub(r"[^a-z0-9\s]", " ", t).split())
     return t in {
         "sim", "s", "confirmo", "confirmar", "pode", "pode sim", "isso", "isso mesmo",
         "sim pode", "sim cancelar", "sim cancela", "sim cancelar todos", "pode cancelar",
@@ -1777,6 +1780,7 @@ def wa_yes(text: str) -> bool:
 
 def wa_no(text: str) -> bool:
     t = wa_normalize(text)
+    t = " ".join(re.sub(r"[^a-z0-9\s]", " ", t).split())
     return t in {
         "nao", "n", "não", "deixa", "deixa quieto", "deixa pra la", "deixa pra lá",
         "voltar", "menu", "esquece", "nao cancela", "não cancela",

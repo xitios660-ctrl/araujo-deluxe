@@ -255,6 +255,10 @@ class IntentPriorityTests(unittest.IsolatedAsyncioTestCase):
             "created_at": "2026-09-15T00:00:00+00:00",
         }
 
+
+    def test_cancel_negation_is_not_cancel_intent(self):
+        self.assertFalse(server.wa_is_cancel_intent("Não quero cancelar, só queria saber meu horário"))
+
     async def test_exact_screenshot_cancel_all_never_starts_booking(self):
         bookings = [
             self.booking("b1", "AD-AAAA11", date="2026-09-20", time="15:30"),
