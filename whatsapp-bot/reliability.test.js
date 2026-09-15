@@ -79,6 +79,16 @@ test("contact and global limits are enforced", async () => {
   for (let i=0; i<9; i++) await g.send("b"+i, i, async () => {});
   await assert.rejects(g.send("c", 1, async () => {}), /Limite/);
 });
+test("user-initiated replies bypass outbound rate caps but still dedupe", async () => {
+  const g = new MessageGuard({ gapMs: 0 });
+  for (let i = 0; i < 6; i++) await g.send("a", i, async () => {});
+  let delivered = 0;
+  await g.send("a", "reply", async () => { delivered++; }, { dedupeKey: "incoming-7" });
+  await g.send("a", "reply", async () => { delivered++; }, { dedupeKey: "incoming-7" });
+  assert.equal(delivered, 1);
+  await assert.rejects(g.send("a", "system", async () => {}), /Limite/);
+});
+
 test("opt-out and circuit breaker prevent delivery", async () => {
   const g = new MessageGuard({ gapMs: 0 });
   const pending = g.send("a", "one", async () => assert.fail());
