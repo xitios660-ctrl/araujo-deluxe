@@ -222,7 +222,8 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
             states = await server.get_slot_states("2026-09-15", service_id="brasileiro")
         by_time = {s["time"]: s for s in states}
         self.assertFalse(by_time["17:00"]["available"])
-        self.assertEqual(by_time["17:00"]["reason"], "agendado")
+        self.assertEqual(by_time["17:00"]["reason"], "ocupado")
+        self.assertIsNone(by_time["17:00"]["booking"])
 
     def test_phone_match_requires_full_number(self):
         self.assertTrue(server.phones_match("+55 11 99999-1234", "11999991234"))

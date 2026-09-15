@@ -442,6 +442,7 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_followup_price_uses_remembered_service(self):
         memory = {
             "last_service_id": "glamour",
+            "last_service_at": server.datetime.now(server.timezone.utc).isoformat(),
             "last_outgoing_text": "Se você gostar, eu já vejo um horário.",
             "history": [],
             "message_count": 3,
@@ -454,6 +455,7 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_followup_deposit_uses_remembered_service(self):
         memory = {
             "last_service_id": "brasileiro",
+            "last_service_at": server.datetime.now(server.timezone.utc).isoformat(),
             "last_outgoing_text": "Volume Brasileiro fica R$ 100.",
             "history": [],
             "message_count": 3,
@@ -465,6 +467,7 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_yes_after_recommendation_continues_booking(self):
         memory = {
             "last_service_id": "brasileiro",
+            "last_service_at": server.datetime.now(server.timezone.utc).isoformat(),
             "last_outgoing_text": "Pelo que você me falou eu iria de Volume Brasileiro. Se você gostar, eu já vejo um horário.",
             "history": [],
             "message_count": 3,
@@ -486,6 +489,7 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_too_expensive_offers_same_category_alternatives(self):
         memory = {
             "last_service_id": "fox",
+            "last_service_at": server.datetime.now(server.timezone.utc).isoformat(),
             "last_outgoing_text": "Fox Eyes fica R$ 150",
             "history": [],
             "message_count": 3,
