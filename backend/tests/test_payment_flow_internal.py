@@ -190,6 +190,57 @@ class PaymentFlowTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIn("mais de uma reserva", result["reply"].lower())
         store.assert_not_awaited()
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "proof_pick")
+        self.assertEqual(set(update["data"]["booking_ids"]), {b1["id"], b2["id"]})
+
+
+    async def test_proof_selection_is_remembered_until_image_arrives(self):
+        b1 = booking()
+        b2 = {**booking(), "id": "booking-87654321", "code": "AD-OTHER1234", "time": "17:00"}
+        session = {"state": "proof_pick", "data": {"booking_ids": [b1["id"], b2["id"]]}}
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+
+        async def session_find(*args, **kwargs):
+            return {"state": session["state"], "data": dict(session["data"])}
+
+        async def session_update(query, update, **kwargs):
+            values = update["$set"]
+            session["state"] = values["state"]
+            session["data"] = dict(values["data"])
+
+        fake.wa_sessions.find_one = AsyncMock(side_effect=session_find)
+        fake.wa_sessions.update_one = AsyncMock(side_effect=session_update)
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=[b1, b2])
+        store = AsyncMock(return_value="proof-new")
+
+        with patch.object(server, "db", fake), patch.object(server, "store_proof_for_review", store):
+            picked = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="AD-OTHER1234", push_name="Cliente"),
+                auth={"test": True},
+            )
+            self.assertIn("agora envie", picked["reply"].lower())
+            self.assertEqual(session["state"], "proof_wait_image")
+            self.assertEqual(session["data"]["booking_id"], b2["id"])
+
+            uploaded = await server.whatsapp_incoming(
+                server.WAIncoming(
+                    phone="5511999999999",
+                    text="",
+                    image_base64=self.proof_b64(),
+                    image_mime="image/jpeg",
+                    push_name="Cliente",
+                ),
+                auth={"test": True},
+            )
+
+        self.assertIn("em análise", uploaded["reply"].lower())
+        self.assertEqual(store.await_args.args[0]["id"], b2["id"])
+        self.assertEqual(session["state"], "menu")
 
 
 if __name__ == "__main__":

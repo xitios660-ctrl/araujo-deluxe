@@ -2498,6 +2498,8 @@ def wa_step_hint(state: str) -> str:
         "reschedule_date": "Qual nova data você quer?",
         "reschedule_time": "Qual novo horário você prefere?",
         "payment_pick": "Me diga o número ou código da reserva que você quer consultar.",
+        "proof_pick": "Me diga o número ou código da reserva do comprovante.",
+        "proof_wait_image": "Agora envie a foto ou PDF do comprovante.",
     }
     return hints.get(state, "")
 
@@ -2914,6 +2916,32 @@ async def wa_priority_action(
     set_state,
 ) -> Optional[dict]:
     t = wa_normalize(text)
+
+    if state == "proof_pick":
+        pending = await wa_find_bookings(phone, only_pending=True)
+        booking_ids = set(sdata.get("booking_ids") or [])
+        candidates = [b for b in pending if b.get("id") in booking_ids]
+        if wa_no(text) or t in {"menu", "voltar"}:
+            await set_state("menu")
+            return wa_reply("Tudo certo 💛 Não associei nenhum comprovante.")
+        selected = wa_pick_booking_from_candidates(text, candidates)
+        if not selected:
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(candidates[:5], 1))
+            return wa_reply(
+                "Qual é a reserva desse comprovante? Responda com o *número* ou *código*:\n\n" + lines
+            )
+        await set_state("proof_wait_image", {"booking_id": selected["id"]})
+        return wa_reply(
+            f"Perfeito 💛 Vou associar o comprovante à reserva *{selected['code']}* "
+            f"({selected['service_name']}, {fmt_date_br(selected['date'])} às {selected['time']}).\n"
+            "Agora envie a *foto ou PDF do comprovante*."
+        )
+
+    if state == "proof_wait_image":
+        if wa_no(text) or t in {"menu", "voltar"}:
+            await set_state("menu")
+            return wa_reply("Tudo certo 💛 Cancelei o envio do comprovante.")
+        return wa_reply("Já sei qual é a reserva 😊 Agora só falta você enviar a *foto ou PDF do comprovante*.")
 
     if state == "payment_pick":
         action = sdata.get("action")
@@ -3335,19 +3363,26 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             return {"reply": "Não encontrei nenhuma reserva aguardando comprovante para este número. 🤔\nDigite *menu* para agendar um horário."}
 
         booking = None
-        code_match = re.search(r"\bAD[- ]?([A-Za-z0-9]{4,10})\b", text, re.IGNORECASE)
+        if state == "proof_wait_image" and sdata.get("booking_id"):
+            booking = next((b for b in pending if b.get("id") == sdata.get("booking_id")), None)
+            if booking is None:
+                await set_state("menu")
+                return {"reply": "Essa reserva não está mais aguardando pagamento. Digite *menu* para continuar."}
+
+        code_match = re.search(r"\bAD[- ]?([A-Za-z0-9]{4,12})\b", text, re.IGNORECASE)
         if code_match:
             wanted = "AD-" + code_match.group(1).upper()
             booking = next((b for b in pending if b.get("code", "").upper() == wanted), None)
         if booking is None and len(pending) == 1:
             booking = pending[0]
         if booking is None:
+            await set_state("proof_pick", {"booking_ids": [b["id"] for b in pending[:5]]})
             lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(pending[:5], 1))
             return {
                 "reply": (
                     "Você tem mais de uma reserva aguardando pagamento e eu não quero colocar o comprovante na errada 😅\n\n"
                     + lines
-                    + "\n\nMe diga o *código da reserva* e envie o comprovante novamente."
+                    + "\n\nMe diga o *número* ou *código* da reserva. Depois eu peço a imagem novamente."
                 )
             }
         if booking.get("proof_status") == "em_analise" and booking.get("proof_id"):
