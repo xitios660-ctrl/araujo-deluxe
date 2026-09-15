@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
 from bson import ObjectId
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
