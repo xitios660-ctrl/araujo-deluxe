@@ -630,27 +630,37 @@ async def update_booking(booking_id: str, data: StatusUpdate, user: dict = Depen
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
 
     old_status = booking.get("status")
-    acquired = False
+    locked_slots = []
     if old_status == "cancelada" and data.status != "cancelada":
-        day = await get_day_availability(booking["date"])
+        day = await get_day_availability(booking["date"], service_id=booking.get("service_id"))
         slot = next((s for s in day["slots"] if s["time"] == booking["time"]), None)
         if not day["open"] or not slot or not slot["available"]:
-            raise HTTPException(status_code=409, detail="Não é possível reativar: o dia/horário não está mais disponível.")
+            raise HTTPException(status_code=409, detail="Não é possível reativar: o período desse procedimento não está mais disponível.")
         try:
-            await acquire_booking_slot(booking["date"], booking["time"])
-            acquired = True
+            locked_slots = await acquire_booking_slot(
+                booking["date"],
+                booking["time"],
+                service_id=booking.get("service_id"),
+                booking_id=booking_id,
+            )
         except BookingSlotError as exc:
             raise HTTPException(status_code=409, detail=exc.detail)
 
     try:
-        await db.bookings.update_one({"id": booking_id}, {"$set": {"status": data.status}})
-    except Exception:
-        if acquired:
-            await release_booking_slot(booking["date"], booking["time"])
-        raise
+        await db.bookings.update_one(
+            {"id": booking_id},
+            {"$set": {
+                "status": data.status,
+                "status_updated_at": datetime.now(timezone.utc).isoformat(),
+                "status_updated_by": user["id"],
+            }},
+        )
+    finally:
+        if locked_slots:
+            await release_booking_slot(booking["date"], booking["time"], locked_slots)
 
     if data.status == "cancelada" and old_status != "cancelada":
-        await release_booking_slot(booking["date"], booking["time"])
+        logging.getLogger(__name__).info("BOOKING_CANCELLED booking_id=%s source=admin", booking_id[:8])
 
     return await db.bookings.find_one({"id": booking_id}, {"_id": 0})
 
@@ -667,13 +677,26 @@ async def create_block(data: BlockCreate, user: dict = Depends(get_current_user)
     if data.time and data.time not in slots_for_date(data.date):
         raise HTTPException(status_code=400, detail="Horário inválido para este dia")
 
-    active_query = {"date": data.date, "status": {"$ne": "cancelada"}}
+    active_bookings = await db.bookings.find(
+        {"date": data.date, "status": {"$ne": "cancelada"}},
+        {"_id": 0},
+    ).to_list(100)
+    active_booking = None
     if data.time:
-        active_query["time"] = data.time
-    active_booking = await db.bookings.find_one(active_query, {"_id": 0, "id": 1, "time": 1})
+        block_minute = time_to_minutes(data.time)
+        active_booking = next(
+            (
+                booking for booking in active_bookings
+                if booking_interval_minutes(booking)[0] <= block_minute < booking_interval_minutes(booking)[1]
+            ),
+            None,
+        )
+    elif active_bookings:
+        active_booking = active_bookings[0]
+
     if active_booking:
         detail = (
-            f"O horário {data.time} já tem agendamento. Cancele ou mova a reserva antes de bloquear."
+            f"O horário {data.time} cai dentro de um atendimento já agendado. Cancele ou mova a reserva antes de bloquear."
             if data.time
             else "Este dia possui agendamentos. Cancele ou mova as reservas antes de fechar o dia inteiro."
         )
@@ -684,6 +707,7 @@ async def create_block(data: BlockCreate, user: dict = Depends(get_current_user)
         raise HTTPException(status_code=409, detail="Já existe um bloqueio para este horário")
     block = {"id": str(uuid.uuid4()), "date": data.date, "time": data.time, "reason": (data.reason or "").strip(), "created_at": datetime.now(timezone.utc).isoformat()}
     await db.blocks.insert_one({**block})
+    logging.getLogger(__name__).info("SCHEDULE_BLOCK_CREATED date=%s time=%s", data.date, data.time or "DAY")
     return block
 
 
@@ -692,6 +716,7 @@ async def delete_block(block_id: str, user: dict = Depends(get_current_user)):
     result = await db.blocks.delete_one({"id": block_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Bloqueio não encontrado")
+    logging.getLogger(__name__).info("SCHEDULE_BLOCK_REMOVED block_id=%s", block_id[:8])
     return {"ok": True}
 
 
@@ -3237,6 +3262,22 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception):
+    logger.exception("CONVERSATION_ERROR path=%s", request.url.path)
+    if request.url.path.endswith("/api/whatsapp/incoming"):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "reply": "Tive um probleminha para processar isso agora 😅 Tenta me mandar de novo em alguns segundos."
+            },
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Ocorreu um erro interno. Tente novamente em alguns instantes."},
+    )
 
 
 @app.on_event("startup")

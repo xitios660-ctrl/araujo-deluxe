@@ -151,5 +151,30 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(server.phones_match("+55 11 99999-1234", "11999991234"))
         self.assertFalse(server.phones_match("99991234", "11999991234"))
 
+
+
+    async def test_timed_block_rejects_middle_of_long_booking(self):
+        fake_db = MagicMock()
+        fake_db.bookings.find.return_value.to_list = AsyncMock(return_value=[{
+            "id": "b1",
+            "service_id": "glamour",
+            "date": "2026-09-19",
+            "time": "14:00",
+            "status": "confirmada",
+            "duration_minutes": 150,
+            "buffer_minutes": 0,
+        }])
+        fake_db.blocks.find_one = AsyncMock(return_value=None)
+        fake_db.blocks.insert_one = AsyncMock()
+        with patch.object(server, "db", fake_db):
+            with self.assertRaises(server.HTTPException) as ctx:
+                await server.create_block(
+                    server.BlockCreate(date="2026-09-19", time="16:00", reason="Bloqueio"),
+                    user={"id": "admin"},
+                )
+        self.assertEqual(ctx.exception.status_code, 409)
+        fake_db.blocks.insert_one.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()
