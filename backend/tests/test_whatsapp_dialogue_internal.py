@@ -218,5 +218,147 @@ class DialogueRegressionTests(unittest.IsolatedAsyncioTestCase):
         fake.wa_sessions.update_one.assert_awaited()
 
 
+
+
+class IntentPriorityTests(unittest.IsolatedAsyncioTestCase):
+    def fake_db(self, state="menu", sdata=None, bookings=None):
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        fake.wa_sessions.find_one = AsyncMock(return_value={"state": state, "data": sdata or {}})
+        fake.wa_sessions.update_one = AsyncMock()
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=bookings or [])
+        fake.bookings.find_one = AsyncMock(side_effect=lambda q, *args, **kwargs: next(
+            (b for b in (bookings or []) if b.get("id") == q.get("id")), None
+        ))
+        fake.bookings.update_one = AsyncMock()
+        fake.proofs.update_one = AsyncMock()
+        return fake
+
+    def booking(self, booking_id, code, service="Volume Brasileiro", status="confirmada", date="2026-09-20", time="15:30", proof_status=None):
+        return {
+            "id": booking_id,
+            "code": code,
+            "service_id": "brasileiro",
+            "service_name": service,
+            "category": "cilios",
+            "price": 100,
+            "deposit": 50,
+            "date": date,
+            "time": time,
+            "client_name": "Gustavo",
+            "client_phone": "5511999999999",
+            "status": status,
+            "proof_status": proof_status,
+            "created_at": "2026-09-15T00:00:00+00:00",
+        }
+
+    async def test_exact_screenshot_cancel_all_never_starts_booking(self):
+        bookings = [
+            self.booking("b1", "AD-AAAA11", date="2026-09-20", time="15:30"),
+            self.booking("b2", "AD-BBBB22", service="Volume Glamour", date="2026-09-22", time="17:00"),
+        ]
+        fake = self.fake_db(bookings=bookings)
+        with patch.object(server, "db", fake), patch.object(server, "slot_in_past", return_value=False):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Quero cancelar todos os meus agendamentos", push_name="Gustavo"),
+                auth={"test": True},
+            )
+        reply = result["reply"].lower()
+        self.assertIn("nada foi cancelado ainda", reply)
+        self.assertIn("sim, cancelar todos", reply)
+        self.assertNotIn("bora marcar", reply)
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "cancel_confirm_all")
+        self.assertEqual(set(update["data"]["booking_ids"]), {"b1", "b2"})
+
+    async def test_cancel_all_requires_confirmation_and_releases_slots(self):
+        bookings = [
+            self.booking("b1", "AD-AAAA11", date="2026-09-20", time="15:30"),
+            self.booking("b2", "AD-BBBB22", service="Volume Glamour", date="2026-09-22", time="17:00"),
+        ]
+        fake = self.fake_db(
+            state="cancel_confirm_all",
+            sdata={"booking_ids": ["b1", "b2"]},
+            bookings=bookings,
+        )
+        release = AsyncMock()
+        with patch.object(server, "db", fake), \
+             patch.object(server, "slot_in_past", return_value=False), \
+             patch.object(server, "release_booking_slot", release):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="sim, cancelar todos", push_name="Gustavo"),
+                auth={"test": True},
+            )
+        self.assertIn("cancelei *2*", result["reply"].lower())
+        self.assertEqual(fake.bookings.update_one.await_count, 2)
+        self.assertEqual(release.await_count, 2)
+
+    async def test_cancel_confirmation_no_keeps_booking(self):
+        bookings = [self.booking("b1", "AD-AAAA11")]
+        fake = self.fake_db(
+            state="cancel_confirm_one",
+            sdata={"booking_id": "b1"},
+            bookings=bookings,
+        )
+        release = AsyncMock()
+        with patch.object(server, "db", fake), patch.object(server, "release_booking_slot", release):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="não", push_name="Gustavo"),
+                auth={"test": True},
+            )
+        self.assertIn("mantive", result["reply"].lower())
+        fake.bookings.update_one.assert_not_awaited()
+        release.assert_not_awaited()
+
+    async def test_reschedule_is_not_interpreted_as_new_booking(self):
+        bookings = [self.booking("b1", "AD-AAAA11")]
+        fake = self.fake_db(bookings=bookings)
+        with patch.object(server, "db", fake), patch.object(server, "slot_in_past", return_value=False):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Quero remarcar meu agendamento", push_name="Gustavo"),
+                auth={"test": True},
+            )
+        self.assertIn("qual nova data", result["reply"].lower())
+        self.assertNotIn("bora marcar", result["reply"].lower())
+        update = fake.wa_sessions.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update["state"], "reschedule_date")
+        self.assertEqual(update["data"]["booking_id"], "b1")
+
+    async def test_proof_status_question_is_answered_before_booking_rules(self):
+        booking = self.booking("b1", "AD-AAAA11", status="pendente", proof_status="em_analise")
+        booking["proof_id"] = "p1"
+        fake = self.fake_db(bookings=[booking])
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Meu comprovante já foi aprovado?", push_name="Gustavo"),
+                auth={"test": True},
+            )
+        self.assertIn("em análise", result["reply"].lower())
+
+    async def test_reservations_query_lists_without_starting_booking(self):
+        bookings = [self.booking("b1", "AD-AAAA11")]
+        fake = self.fake_db(bookings=bookings)
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Quais são meus agendamentos?", push_name="Gustavo"),
+                auth={"test": True},
+            )
+        self.assertIn("volume brasileiro", result["reply"].lower())
+        self.assertIn("ad-aaaa11", result["reply"].lower())
+        self.assertNotIn("bora marcar", result["reply"].lower())
+
+    async def test_business_hours_question_is_answered(self):
+        fake = self.fake_db(bookings=[])
+        with patch.object(server, "db", fake):
+            result = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="Vocês atendem domingo?", push_name="Gustavo"),
+                auth={"test": True},
+            )
+        self.assertIn("domingo", result["reply"].lower())
+        self.assertIn("fechado", result["reply"].lower())
+
 if __name__ == "__main__":
     unittest.main()

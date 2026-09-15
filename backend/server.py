@@ -893,6 +893,8 @@ async def _get_reviewable_proof(proof_id: str):
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
     if booking.get("proof_id") != proof_id:
         raise HTTPException(status_code=409, detail="Este não é mais o comprovante atual deste agendamento.")
+    if booking.get("status") != "pendente" or booking.get("proof_status") != "em_analise":
+        raise HTTPException(status_code=409, detail="Este comprovante não está mais aguardando análise.")
     return proof, booking
 
 
@@ -977,7 +979,7 @@ MENU_TEXT = (
     "Para interromper mensagens: PARAR. Para retomar: REATIVAR."
 )
 
-RESET_WORDS = {"menu", "0", "voltar", "inicio", "início", "cancelar", "sair"}
+RESET_WORDS = {"menu", "0", "voltar", "inicio", "início"}
 
 
 CATEGORY_KEYS = ["cilios", "unhas", "sobrancelhas"]
@@ -1564,6 +1566,12 @@ def wa_step_hint(state: str) -> str:
         "avail_pick": "Escolhe um dos *horários livres* que eu te mostrei, ou me pergunta por outro dia.",
         "book_time": "Escolhe um dos *horários* que eu te mostrei e me manda o número ou o horário.",
         "book_name": "Pra finalizar, me manda seu *nome completo* 😊",
+        "cancel_pick": "Me diga qual reserva você quer cancelar.",
+        "cancel_confirm_one": "Responda *SIM* para cancelar ou *NÃO* para manter.",
+        "cancel_confirm_all": "Responda *SIM, CANCELAR TODOS* ou *NÃO*.",
+        "reschedule_pick": "Me diga qual reserva você quer remarcar.",
+        "reschedule_date": "Qual nova data você quer?",
+        "reschedule_time": "Qual novo horário você prefere?",
     }
     return hints.get(state, "")
 
@@ -1676,6 +1684,467 @@ async def wa_find_bookings(phone: str, only_pending: bool = False) -> List[dict]
     all_b = await db.bookings.find(query, {"_id": 0}).to_list(2000)
     matches = [b for b in all_b if _digits(b["client_phone"])[-8:] == digits]
     return sorted(matches, key=lambda b: b.get("created_at", ""), reverse=True)
+
+
+
+def wa_booking_status_label(booking: dict) -> str:
+    if booking.get("status") == "cancelada":
+        return "cancelado"
+    if booking.get("status") == "concluida":
+        return "concluído"
+    if booking.get("proof_status") == "em_analise":
+        return "comprovante em análise"
+    if booking.get("proof_status") == "rejeitado":
+        return "comprovante não aprovado"
+    if booking.get("status") == "confirmada":
+        return "confirmado"
+    return "sinal pendente"
+
+
+def wa_booking_line(booking: dict, index: Optional[int] = None) -> str:
+    prefix = f"*{index}.* " if index is not None else ""
+    return (
+        f"{prefix}*{booking['service_name']}* — {fmt_date_br(booking['date'])} às {booking['time']} "
+        f"· {wa_booking_status_label(booking)} · {booking['code']}"
+    )
+
+
+async def wa_active_bookings(phone: str) -> List[dict]:
+    bookings = await wa_find_bookings(phone)
+    active = []
+    for booking in bookings:
+        if booking.get("status") not in {"pendente", "confirmada"}:
+            continue
+        try:
+            if slot_in_past(booking["date"], booking["time"]):
+                continue
+        except Exception:
+            continue
+        active.append(booking)
+    return sorted(active, key=lambda b: (b.get("date", ""), b.get("time", ""), b.get("created_at", "")))
+
+
+def wa_is_cancel_intent(text: str) -> bool:
+    t = wa_normalize(text)
+    phrases = (
+        "cancelar", "cancela", "cancele", "cancelamento",
+        "desmarcar", "desmarca", "desmarque",
+        "nao vou conseguir ir", "nao vou poder ir", "nao posso ir",
+        "nao consigo ir", "preciso cancelar", "quero cancelar",
+        "quero desmarcar", "tirar meu horario", "tirar meus horarios",
+    )
+    return any(p in t for p in phrases)
+
+
+def wa_is_reschedule_intent(text: str) -> bool:
+    t = wa_normalize(text)
+    phrases = (
+        "remarcar", "remarca", "reagendar", "reagenda",
+        "mudar meu horario", "mudar o horario", "trocar meu horario", "trocar o horario",
+        "mudar a data", "trocar a data", "mudar meu agendamento", "trocar meu agendamento",
+    )
+    return any(p in t for p in phrases)
+
+
+def wa_is_reservations_intent(text: str) -> bool:
+    t = wa_normalize(text)
+    phrases = (
+        "meus agendamentos", "minhas reservas", "meus horarios marcados",
+        "meu horario marcado", "qual meu horario", "qual e meu horario",
+        "tenho horario marcado", "tenho algum horario", "meu agendamento",
+    )
+    return any(p in t for p in phrases)
+
+
+def wa_is_proof_status_intent(text: str) -> bool:
+    t = wa_normalize(text)
+    if "comprovante" not in t:
+        return False
+    return any(p in t for p in (
+        "status", "aprovado", "aprovou", "aprovaram", "analise",
+        "analisado", "resultado", "como esta", "como ficou",
+    ))
+
+
+def wa_yes(text: str) -> bool:
+    t = wa_normalize(text)
+    return t in {
+        "sim", "s", "confirmo", "confirmar", "pode", "pode sim", "isso", "isso mesmo",
+        "sim pode", "sim cancelar", "sim cancela", "sim cancelar todos", "pode cancelar",
+        "cancela", "cancela sim", "cancela tudo", "cancelar todos",
+    } or t.startswith("sim ")
+
+
+def wa_no(text: str) -> bool:
+    t = wa_normalize(text)
+    return t in {
+        "nao", "n", "não", "deixa", "deixa quieto", "deixa pra la", "deixa pra lá",
+        "voltar", "menu", "esquece", "nao cancela", "não cancela",
+    } or t.startswith("nao ")
+
+
+def wa_all_scope(text: str) -> bool:
+    t = wa_normalize(text)
+    return any(p in t for p in (
+        "todos", "todas", "tudo", "todos os meus", "todas as minhas",
+        "todos meus", "todas minhas",
+    ))
+
+
+async def wa_cancel_booking_record(booking: dict, source: str = "whatsapp") -> bool:
+    fresh = await db.bookings.find_one({"id": booking["id"]}, {"_id": 0})
+    if not fresh or fresh.get("status") not in {"pendente", "confirmada"}:
+        return False
+    try:
+        if slot_in_past(fresh["date"], fresh["time"]):
+            return False
+    except Exception:
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.bookings.update_one(
+        {"id": fresh["id"]},
+        {"$set": {
+            "status": "cancelada",
+            "cancelled_at": now,
+            "cancelled_source": source,
+        }},
+    )
+    if fresh.get("proof_id") and fresh.get("proof_status") == "em_analise":
+        await db.proofs.update_one(
+            {"id": fresh["proof_id"]},
+            {"$set": {"status": "cancelado", "reviewed_at": now, "reviewed_by": source}},
+        )
+    await release_booking_slot(fresh["date"], fresh["time"])
+    return True
+
+
+async def wa_move_booking(booking_id: str, new_date: str, new_time: str) -> dict:
+    booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0})
+    if not booking or booking.get("status") not in {"pendente", "confirmada"}:
+        raise BookingSlotError("booking_unavailable", "Esse agendamento não pode mais ser remarcado.")
+
+    if booking["date"] == new_date and booking["time"] == new_time:
+        return booking
+
+    day = await get_day_availability(new_date)
+    if not day["open"]:
+        raise BookingSlotError("closed_day", day.get("closed_reason") or "O estúdio está fechado nesse dia.")
+    slot = next((s for s in day["slots"] if s["time"] == new_time), None)
+    if not slot or not slot["available"]:
+        raise BookingSlotError("slot_taken", "Esse horário não está mais disponível.")
+
+    await acquire_booking_slot(new_date, new_time)
+    old_date, old_time = booking["date"], booking["time"]
+    try:
+        await db.bookings.update_one(
+            {"id": booking_id},
+            {"$set": {
+                "date": new_date,
+                "time": new_time,
+                "rescheduled_at": datetime.now(timezone.utc).isoformat(),
+                "rescheduled_source": "whatsapp",
+            }},
+        )
+        await release_booking_slot(old_date, old_time)
+    except Exception:
+        await release_booking_slot(new_date, new_time)
+        raise
+
+    return await db.bookings.find_one({"id": booking_id}, {"_id": 0})
+
+
+def wa_business_hours_text() -> str:
+    lines = ["🕐 *Horários de atendimento:*"]
+    for weekday in range(7):
+        slots = WEEKDAY_SLOTS.get(weekday, [])
+        if slots:
+            lines.append(f"• {WEEKDAY_NAMES[weekday]}: {', '.join(slots)}")
+        else:
+            lines.append(f"• {WEEKDAY_NAMES[weekday]}: fechado")
+    return "\n".join(lines)
+
+
+def wa_generic_prices_text() -> str:
+    lines = ["💛 *Serviços e valores:*"]
+    for category in CATEGORY_KEYS:
+        lines.append(f"\n*{CATEGORY_LABELS_WA[category]}*")
+        for service in [s for s in SERVICES if s["category"] == category]:
+            lines.append(f"• {service['name']}: R$ {service['price']}")
+    lines.append("\nSe quiser, me fala o nome de um procedimento que eu te digo também o sinal e a duração.")
+    return "\n".join(lines)
+
+
+async def wa_resolve_booking_selection(text: str, booking_ids: List[str], phone: str) -> Optional[dict]:
+    active = await wa_active_bookings(phone)
+    candidates = [b for b in active if b["id"] in set(booking_ids)]
+    if not candidates:
+        return None
+
+    t = wa_normalize(text)
+    if t.isdigit() and 1 <= int(t) <= len(candidates):
+        return candidates[int(t) - 1]
+
+    code_match = re.search(r"\bad[- ]?([a-z0-9]{4,10})\b", t)
+    if code_match:
+        compact = "AD-" + code_match.group(1).upper()
+        found = [b for b in candidates if b.get("code", "").upper() == compact]
+        if len(found) == 1:
+            return found[0]
+
+    service = wa_service_from_text(text)
+    date_str = wa_date_from_sentence(text)
+    filtered = candidates
+    if service:
+        filtered = [b for b in filtered if b.get("service_id") == service["id"]]
+    if date_str:
+        filtered = [b for b in filtered if b.get("date") == date_str]
+    return filtered[0] if len(filtered) == 1 else None
+
+
+async def wa_priority_action(
+    text: str,
+    state: str,
+    sdata: dict,
+    phone: str,
+    set_state,
+) -> Optional[dict]:
+    t = wa_normalize(text)
+
+    # Stateful destructive flows come first, so casual words cannot accidentally
+    # start a fresh booking while a cancellation is waiting for confirmation.
+    if state == "cancel_confirm_all":
+        if wa_no(text):
+            await set_state("menu")
+            return wa_reply("Tudo certo 💛 Não cancelei nada.")
+        if wa_yes(text):
+            ids = sdata.get("booking_ids", [])
+            active = await wa_active_bookings(phone)
+            targets = [b for b in active if b["id"] in set(ids)]
+            cancelled = 0
+            for booking in targets:
+                if await wa_cancel_booking_record(booking):
+                    cancelled += 1
+            await set_state("menu")
+            if cancelled:
+                return wa_reply(
+                    f"✅ Pronto. Cancelei *{cancelled}* agendamento{'s' if cancelled != 1 else ''} "
+                    "e liberei os horários novamente no site."
+                )
+            return wa_reply("Não encontrei nenhum agendamento ativo para cancelar agora.")
+
+        return wa_reply("Só para eu não cancelar nada por engano: responda *SIM, CANCELAR TODOS* ou *NÃO*.")
+
+    if state == "cancel_confirm_one":
+        if wa_no(text):
+            await set_state("menu")
+            return wa_reply("Tudo certo 💛 Mantive seu agendamento.")
+        if wa_yes(text):
+            booking_id = sdata.get("booking_id")
+            booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0}) if booking_id else None
+            ok = bool(booking and await wa_cancel_booking_record(booking))
+            await set_state("menu")
+            if ok:
+                return wa_reply(
+                    f"✅ Cancelei *{booking['service_name']}* de {fmt_date_br(booking['date'])} às {booking['time']}. "
+                    "O horário já voltou a ficar disponível no site."
+                )
+            return wa_reply("Esse agendamento já não estava mais disponível para cancelamento.")
+        return wa_reply("Confirma o cancelamento? Responda *SIM* ou *NÃO*.")
+
+    if state == "cancel_pick":
+        ids = sdata.get("booking_ids", [])
+        if wa_no(text):
+            await set_state("menu")
+            return wa_reply("Tudo certo 💛 Não cancelei nada.")
+        if wa_all_scope(text):
+            active = await wa_active_bookings(phone)
+            targets = [b for b in active if b["id"] in set(ids)]
+            if not targets:
+                await set_state("menu")
+                return wa_reply("Não encontrei mais nenhum agendamento ativo.")
+            await set_state("cancel_confirm_all", {"booking_ids": [b["id"] for b in targets]})
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(targets, 1))
+            return wa_reply(
+                "Você quer cancelar *TODOS* estes agendamentos?\n\n"
+                + lines
+                + "\n\nNada foi cancelado ainda. Responda *SIM, CANCELAR TODOS* para confirmar."
+            )
+
+        selected = await wa_resolve_booking_selection(text, ids, phone)
+        if selected:
+            await set_state("cancel_confirm_one", {"booking_id": selected["id"]})
+            return wa_reply(
+                "Só confirmando antes de cancelar:\n\n"
+                + wa_booking_line(selected)
+                + "\n\nResponda *SIM* para cancelar ou *NÃO* para manter."
+            )
+        return wa_reply("Me manda o *número* da reserva que quer cancelar, o código dela, ou escreva *todos*.")
+
+    if state == "reschedule_pick":
+        ids = sdata.get("booking_ids", [])
+        if wa_no(text):
+            await set_state("menu")
+            return wa_reply("Tudo certo 💛 Não alterei nenhum agendamento.")
+        selected = await wa_resolve_booking_selection(text, ids, phone)
+        if selected:
+            await set_state("reschedule_date", {"booking_id": selected["id"]})
+            return wa_reply(
+                f"Vamos remarcar *{selected['service_name']}* de {fmt_date_br(selected['date'])} às {selected['time']} 💛\n\n"
+                "Qual nova data você quer? Pode mandar *amanhã*, *sexta* ou *20/09*."
+            )
+        return wa_reply("Me manda o *número* da reserva que quer remarcar ou o código dela.")
+
+    if state == "reschedule_date":
+        booking_id = sdata.get("booking_id")
+        booking = await db.bookings.find_one({"id": booking_id}, {"_id": 0}) if booking_id else None
+        if not booking:
+            await set_state("menu")
+            return wa_reply("Não encontrei mais esse agendamento.")
+        date_str = wa_date_from_sentence(text)
+        if not date_str:
+            return wa_reply("Qual nova data você quer? Pode mandar *DD/MM*, *amanhã* ou o dia da semana.")
+        day = await get_day_availability(date_str)
+        if not day["open"]:
+            return wa_reply(
+                f"Em *{fmt_date_br(date_str)}* não consigo remarcar: "
+                f"{day.get('closed_reason') or 'o estúdio está fechado'}. Me fala outra data."
+            )
+        available = [s["time"] for s in day["slots"] if s["available"]]
+        if booking["date"] == date_str and booking["time"] not in available:
+            available = sorted(set(available + [booking["time"]]))
+        if not available:
+            return wa_reply(f"Não tem horário livre em *{fmt_date_br(date_str)}* 😔 Me fala outro dia.")
+        await set_state("reschedule_time", {"booking_id": booking_id, "date": date_str, "slots": available})
+        return wa_reply(
+            f"Tenho estes horários em *{fmt_date_br(date_str)}*: " + ", ".join(available) + ".\nQual você prefere?"
+        )
+
+    if state == "reschedule_time":
+        booking_id = sdata.get("booking_id")
+        date_str = sdata.get("date")
+        slots = sdata.get("slots", [])
+        requested = wa_time_from_sentence(text) or t.replace("h", ":").strip()
+        if re.fullmatch(r"\d{1,2}:", requested):
+            requested += "00"
+        if requested in slots:
+            chosen = requested
+        elif t.isdigit() and 1 <= int(t) <= len(slots):
+            chosen = slots[int(t) - 1]
+        else:
+            return wa_reply("Me manda um dos horários que eu mostrei, por exemplo *15:30*.")
+
+        try:
+            moved = await wa_move_booking(booking_id, date_str, chosen)
+        except BookingSlotError as exc:
+            await set_state("reschedule_date", {"booking_id": booking_id})
+            return wa_reply(f"😔 {exc.detail} Me fala outra data que eu consulto novamente.")
+        await set_state("menu")
+        return wa_reply(
+            f"✅ Remarcado! *{moved['service_name']}* ficou para *{fmt_date_br(moved['date'])} às {moved['time']}*.\n"
+            f"🔑 Código: {moved['code']}"
+        )
+
+    # High-priority intent: cancellation.
+    if wa_is_cancel_intent(text):
+        active = await wa_active_bookings(phone)
+        if not active:
+            return wa_reply("Você não tem nenhum agendamento futuro ativo para cancelar por este número. 💛")
+
+        if wa_all_scope(text):
+            await set_state("cancel_confirm_all", {"booking_ids": [b["id"] for b in active]})
+            lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(active, 1))
+            return wa_reply(
+                "Encontrei estes agendamentos:\n\n"
+                + lines
+                + "\n\n⚠️ *Nada foi cancelado ainda.*\n"
+                "Se quer cancelar todos mesmo, responda *SIM, CANCELAR TODOS*."
+            )
+
+        if len(active) == 1:
+            booking = active[0]
+            await set_state("cancel_confirm_one", {"booking_id": booking["id"]})
+            return wa_reply(
+                "Encontrei este agendamento:\n\n"
+                + wa_booking_line(booking)
+                + "\n\nQuer cancelar mesmo? Responda *SIM* ou *NÃO*."
+            )
+
+        await set_state("cancel_pick", {"booking_ids": [b["id"] for b in active]})
+        lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(active, 1))
+        return wa_reply(
+            "Qual destes você quer cancelar?\n\n"
+            + lines
+            + "\n\nResponda com o *número*, o *código*, ou escreva *todos*."
+        )
+
+    # High-priority intent: rescheduling. Never interpret "remarcar" as "marcar".
+    if wa_is_reschedule_intent(text):
+        active = await wa_active_bookings(phone)
+        if not active:
+            return wa_reply("Você não tem nenhum agendamento futuro ativo para remarcar por este número.")
+        if len(active) == 1:
+            booking = active[0]
+            await set_state("reschedule_date", {"booking_id": booking["id"]})
+            return wa_reply(
+                f"Claro 💛 Vamos remarcar *{booking['service_name']}* de {fmt_date_br(booking['date'])} às {booking['time']}.\n"
+                "Qual nova data você quer?"
+            )
+        await set_state("reschedule_pick", {"booking_ids": [b["id"] for b in active]})
+        lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(active, 1))
+        return wa_reply("Qual destes você quer remarcar?\n\n" + lines + "\n\nResponda com o *número* ou código.")
+
+    if wa_is_proof_status_intent(text):
+        bookings = await wa_find_bookings(phone)
+        with_proof = [b for b in bookings if b.get("proof_id") or b.get("proof_status")]
+        if not with_proof:
+            return wa_reply("Não encontrei nenhum comprovante enviado por este número.")
+        booking = with_proof[0]
+        status = booking.get("proof_status")
+        if status == "em_analise":
+            return wa_reply(
+                f"⏳ O comprovante do agendamento *{booking['code']}* está *em análise*. "
+                "Assim que houver decisão, eu te aviso por aqui."
+            )
+        if status == "rejeitado":
+            return wa_reply(
+                f"❌ O comprovante do agendamento *{booking['code']}* não foi aprovado. "
+                "Você pode enviar um novo comprovante."
+            )
+        if status == "aprovado" or booking.get("status") == "confirmada":
+            return wa_reply(f"✅ O pagamento do agendamento *{booking['code']}* está aprovado e confirmado.")
+        return wa_reply(f"O agendamento *{booking['code']}* ainda está aguardando o comprovante do sinal.")
+
+    if wa_is_reservations_intent(text):
+        bookings = await wa_find_bookings(phone)
+        if not bookings:
+            return wa_reply("Não encontrei nenhuma reserva neste número. Se quiser, eu já posso agendar uma 💛")
+        lines = "\n".join(wa_booking_line(b, i) for i, b in enumerate(bookings[:5], 1))
+        return wa_reply("📒 *Seus agendamentos:*\n\n" + lines)
+
+    if any(p in t for p in ("falar com atendente", "falar com uma pessoa", "falar com humano", "atendimento humano", "quero falar com alguem")):
+        remembered = await wa_get_memory(phone)
+        name = wa_memory_name(remembered) or "Cliente"
+        await bot_send_text(
+            OWNER_WA,
+            f"🙋 *Pedido de atendimento humano*\n\n{name} · {phone}\nMensagem: {text}",
+        )
+        return wa_reply("Claro 💛 Avisei a responsável que você quer falar com uma pessoa. Enquanto isso, pode me adiantar o que precisa.")
+
+    service = wa_service_from_text(text)
+    if not service and any(p in t for p in ("tabela de preco", "tabela de precos", "precos", "valores", "quanto sao os procedimentos")):
+        return wa_reply(wa_generic_prices_text())
+
+    if any(p in t for p in ("horario de funcionamento", "horarios de funcionamento", "que horas abre", "que horas fecha", "quais dias atende", "quais dias voces atendem", "abre domingo", "atende domingo")):
+        return wa_reply(wa_business_hours_text())
+
+    if not service and any(p in t for p in ("aceita pix", "como paga", "como eu pago", "forma de pagamento", "formas de pagamento", "quanto e o sinal", "valor do sinal")):
+        return wa_reply(
+            "O sinal é pago por *PIX* e o valor depende do procedimento. 💛 "
+            "Me fala qual serviço você quer que eu te digo o valor exato do sinal."
+        )
+
+    return None
 
 
 async def wa_available_slots(date_str: str) -> List[str]:
@@ -1795,6 +2264,11 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         }
 
     normalized_input = wa_normalize(text)
+
+    priority_reply = await wa_priority_action(text, state, sdata, phone, set_state)
+    if priority_reply:
+        return priority_reply
+
     if lower in RESET_WORDS or re.search(r"\bmenu\b", normalized_input):
         await set_state("menu")
         return wa_reply(
@@ -1835,7 +2309,7 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             await set_state("avail_date")
             return {"reply": "📅 Qual data você quer consultar?\nDigite no formato *DD/MM* (ex: 25/12), ou *hoje* / *amanhã*."}
         if lower.startswith("3"):
-            return {"reply": "📸 É só enviar a *foto do comprovante* (ou PDF) aqui nesta conversa que eu confirmo seu horário na hora!"}
+            return {"reply": "📸 É só enviar a *foto do comprovante* aqui nesta conversa. Ele entra *em análise* e eu te aviso assim que for aprovado ou não aprovado."}
         if lower.startswith("4"):
             bookings = (await wa_find_bookings(phone))[:5]
             if not bookings:
@@ -1843,7 +2317,10 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
             emojis = {"pendente": "🕐", "confirmada": "✅", "concluida": "💛", "cancelada": "❌"}
             lines = ["📒 *Suas reservas:*\n"]
             for b in bookings:
-                lines.append(f"{emojis.get(b['status'], '•')} {b['service_name']} — {fmt_date_br(b['date'])} às {b['time']} ({b['status']}) · {b['code']}")
+                lines.append(
+                    f"{emojis.get(b['status'], '•')} {b['service_name']} — {fmt_date_br(b['date'])} às {b['time']} "
+                    f"({wa_booking_status_label(b)}) · {b['code']}"
+                )
             lines.append("\nDigite *menu* para voltar.")
             return {"reply": "\n".join(lines)}
         return wa_reply(
