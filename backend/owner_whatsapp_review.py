@@ -16,25 +16,29 @@ def owner_review_command(text: str):
     return {"approved": approved, "code": code_match.group(0) if code_match else None}
 
 
-async def handle_owner_review(server, phone: str, text: str):
+async def handle_owner_review(phone: str, text: str, server=None):
+    if server is None:
+        import server as server_module
+        server = server_module
     if not server.phones_match(phone, server.OWNER_WA):
         return None
     command = owner_review_command(text)
     if not command:
         return None
 
-    query = {"status": "em_analise"}
-    if command["code"]:
-        booking = await server.db.bookings.find_one({"code": command["code"]}, {"_id": 0})
-        if not booking or not booking.get("proof_id"):
-            return "Não encontrei um comprovante pendente para esse código."
-        query["id"] = booking["proof_id"]
+    if not command["code"]:
+        return "Para segurança, envie o código da reserva junto: *APROVAR AD-CÓDIGO* ou *REJEITAR AD-CÓDIGO*."
 
-    proofs = await server.db.proofs.find(query, {"_id": 0}).sort("created_at", -1).to_list(3)
+    booking = await server.db.bookings.find_one({"code": command["code"]}, {"_id": 0})
+    if not booking or not booking.get("proof_id"):
+        return "Não encontrei um comprovante pendente para esse código."
+
+    proofs = await server.db.proofs.find(
+        {"id": booking["proof_id"], "status": "em_analise"},
+        {"_id": 0},
+    ).to_list(2)
     if not proofs:
-        return "Não encontrei comprovante aguardando análise."
-    if len(proofs) > 1 and not command["code"]:
-        return "Tem mais de um comprovante aguardando análise. Responda *Aprovar AD-CÓDIGO* ou *Rejeitar AD-CÓDIGO*."
+        return "Não encontrei comprovante aguardando análise para essa reserva."
 
     proof = proofs[0]
     booking = await server.db.bookings.find_one({"id": proof.get("booking_id")}, {"_id": 0})
