@@ -1485,7 +1485,7 @@ def resolve_requested_slot(text: str, slots: List[str], daypart: Optional[str] =
     return None
 
 
-def wa_recommended_service(def wa_recommended_service(text: str) -> Optional[dict]:
+def wa_recommended_service(text: str) -> Optional[dict]:
     t = wa_normalize(text)
     if any(x in t for x in ("delicado", "delicada", "natural", "discreto", "leve")):
         return SERVICES_BY_ID["brasileiro"]
