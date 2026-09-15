@@ -232,7 +232,7 @@ function uiTextFallback(ui, reply) {
     const desc = row.description ? " — " + row.description : "";
     return "*" + (i + 1) + ".* " + String(row.title || "Opção") + desc;
   });
-  return [String(reply || ui.text || "Escolha uma opção"), "", ...options, "", "_Você pode tocar no menu abaixo ou responder com o número._"].join("\n");
+  return [String(reply || ui.text || "Escolha uma opção"), "", ...options, "", "_Responda com o número ou escreva normalmente o que você precisa._"].join("\n");
 }
 
 async function sendBotReply(phone, jid, data, reply, dedupeKey) {

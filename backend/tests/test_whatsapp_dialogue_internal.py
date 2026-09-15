@@ -387,6 +387,20 @@ class ConversationIntelligenceTests(unittest.IsolatedAsyncioTestCase):
             )
         return result, fake
 
+    async def test_returning_greeting_is_compact_and_site_is_not_repeated(self):
+        memory = {
+            "last_service_id": "brasileiro",
+            "name": "Gustavo",
+            "history": [],
+            "message_count": 4,
+        }
+        result, _ = await self.call("oi", memory=memory)
+        reply = result["reply"]
+        self.assertIn("Bom te ver por aqui de novo", reply)
+        self.assertIn("Volume Brasileiro", reply)
+        self.assertNotIn("https://araujo-deluxe-studio.onrender.com", reply)
+        self.assertEqual(len(result["ui"]["sections"][0]["rows"]), 5)
+
     async def test_site_can_be_requested_naturally(self):
         result, _ = await self.call("manda o site para eu reservar")
         self.assertIn("araujo-deluxe-studio.onrender.com", result["reply"])

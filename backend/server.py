@@ -1008,17 +1008,17 @@ def wa_main_menu_ui() -> dict:
     return {
         "type": "list",
         "title": "Araújo Deluxe ✨",
-        "text": "Como posso te ajudar?",
-        "button_text": "Abrir menu",
-        "footer": "Você também pode escrever normalmente 💛",
+        "text": "O que você quer fazer?",
+        "button_text": "Ver opções",
+        "footer": "Ou simplesmente me escreva do seu jeito 💛",
         "sections": [{
             "title": "Atendimento",
             "rows": [
-                {"id": "menu:agendar", "title": "📅 Agendar horário", "description": "Escolher procedimento, data e horário"},
-                {"id": "menu:horarios", "title": "🕐 Ver horários", "description": "Consultar horários disponíveis"},
-                {"id": "menu:comprovante", "title": "📸 Enviar comprovante", "description": "Confirmar o sinal do agendamento"},
-                {"id": "menu:reservas", "title": "📒 Minhas reservas", "description": "Consultar meus agendamentos"},
-                {"id": "menu:site", "title": "🌐 Reservar pelo site", "description": "Abrir o site oficial do Araújo Deluxe"},
+                {"id": "menu:agendar", "title": "📅 Agendar"},
+                {"id": "menu:horarios", "title": "🕐 Ver horários"},
+                {"id": "menu:comprovante", "title": "📸 Comprovante"},
+                {"id": "menu:reservas", "title": "📒 Minhas reservas"},
+                {"id": "menu:site", "title": "🌐 Agendar pelo site"},
             ],
         }],
     }
@@ -1917,14 +1917,14 @@ async def wa_natural_reply(text: str, state: str = "menu", phone: str = "", memo
                 hello_name = f", {remembered_name.split()[0]}" if remembered_name else ""
                 tail = f" Da última vez a gente estava falando de *{remembered_service['name']}*." if remembered_service else ""
                 return (
-                    f"Oii{hello_name} 💛 Que bom falar com você de novo!{tail} "
-                    "Pode continuar de onde parou ou me pedir outra coisa.\n\n"
-                    + wa_site_cta("Se preferir reservar direto")
+                    f"Oii{hello_name} 💛 Bom te ver por aqui de novo!{tail}\n\n"
+                    "Quer continuar nisso ou ver outra coisa? Pode falar comigo do seu jeito 😊\n"
+                    "Se preferir fazer a reserva pelo site, é só escolher *Agendar pelo site* nas opções abaixo."
                 )
             return (
-                "Oii 💛 Tudo bem? Me conta do seu jeito o que você está querendo fazer. "
-                "Eu consigo te ajudar a escolher, comparar valores, ver horários e fazer a reserva por aqui.\n\n"
-                + wa_site_cta("Se achar mais prático")
+                "Oii 💛 Tudo bem? Me conta o que você está procurando. "
+                "Posso te ajudar a escolher o procedimento, ver valores e horários ou já fazer sua reserva 😊\n\n"
+                "Se preferir, também dá para agendar pelo site nas opções abaixo."
             )
         return "Oii 💛 Tô por aqui sim! " + wa_step_hint(state)
 
