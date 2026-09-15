@@ -1,9 +1,8 @@
-name: Deploy Loja Dente de Cobra (GitHub Pages)
+name: Manual legacy GitHub Pages deploy
 # build v2 - conectado ao backend Render
 
+# Legacy/manual fallback only. Production is the Render static site.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -26,7 +25,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.16.0
 
       - name: Instalar dependencias
         run: yarn install --frozen-lockfile
