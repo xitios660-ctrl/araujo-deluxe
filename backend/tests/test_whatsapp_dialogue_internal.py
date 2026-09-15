@@ -18,6 +18,61 @@ for key, value in {
 import server
 
 
+class AvailabilityLanguageTests(unittest.IsolatedAsyncioTestCase):
+    def test_after_tomorrow_is_two_days_ahead(self):
+        now = server.datetime(2026, 9, 14, 21, 38, tzinfo=server.TZ)
+        self.assertEqual(server.wa_date_from_sentence("Para depois de amanhã tem horário?", now), "2026-09-16")
+
+    def test_day_number_uses_current_month_when_future(self):
+        now = server.datetime(2026, 9, 14, 21, 38, tzinfo=server.TZ)
+        self.assertEqual(server.wa_date_from_sentence("E dia 16?", now), "2026-09-16")
+
+    def test_day_number_rolls_to_next_month_if_needed(self):
+        now = server.datetime(2026, 9, 30, 21, 38, tzinfo=server.TZ)
+        self.assertEqual(server.wa_date_from_sentence("dia 2", now), "2026-10-02")
+
+    async def test_specific_date_availability_without_service(self):
+        day = {
+            "date": "2026-09-16", "weekday_name": "Quarta-feira",
+            "scheduled_open": True, "open": True, "day_blocked": False,
+            "closed_reason": None,
+            "slots": [
+                {"time": "09:00", "available": True},
+                {"time": "11:00", "available": False},
+                {"time": "15:30", "available": True},
+            ],
+        }
+        setter = AsyncMock()
+        with patch.object(server, "get_day_availability", AsyncMock(return_value=day)):
+            result = await server.wa_smart_action(
+                "Para dia 16/09 tem horário", "menu", {}, "5511999999999", {}, setter
+            )
+        self.assertIn("16/09/2026", result["reply"])
+        self.assertIn("09:00", result["reply"])
+        self.assertIn("15:30", result["reply"])
+        self.assertNotIn("11:00", result["reply"])
+        self.assertNotIn("qual dia", result["reply"].lower())
+
+    async def test_followup_day_keeps_availability_context(self):
+        day = {
+            "date": "2026-09-16", "weekday_name": "Quarta-feira",
+            "scheduled_open": True, "open": True, "day_blocked": False,
+            "closed_reason": None,
+            "slots": [{"time": "17:00", "available": True}],
+        }
+        memory = {"history": [{"role": "user", "text": "Para depois de amanhã tem horário?"}]}
+        setter = AsyncMock()
+        # The parser itself is covered with a fixed clock above. For the smart
+        # follow-up, use an explicit date so the test is stable on any CI date.
+        with patch.object(server, "get_day_availability", AsyncMock(return_value=day)):
+            result = await server.wa_smart_action(
+                "E dia 16/09?", "menu", {}, "5511999999999", memory, setter
+            )
+        self.assertIn("16/09/2026", result["reply"])
+        self.assertIn("17:00", result["reply"])
+        self.assertNotIn("menu", result["reply"].lower())
+
+
 class DialogueRegressionTests(unittest.IsolatedAsyncioTestCase):
     def fake_db(self, state="book_category", history=None):
         fake = MagicMock()

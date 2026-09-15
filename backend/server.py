@@ -1094,19 +1094,38 @@ def wa_memory_service(memory: Optional[dict]) -> Optional[dict]:
     return SERVICES_BY_ID.get((memory or {}).get("last_service_id"))
 
 
-def wa_date_from_sentence(text: str) -> Optional[str]:
+def wa_date_from_sentence(text: str, now: Optional[datetime] = None) -> Optional[str]:
     t = wa_normalize(text)
-    now = datetime.now(TZ)
-    if "depois de amanha" in t:
+    now = now or datetime.now(TZ)
+
+    # Order matters: "depois de amanhã" also contains the word "amanhã".
+    if re.search(r"\bdepois\s+de\s+amanha\b", t):
         return (now + timedelta(days=2)).strftime("%Y-%m-%d")
-    if "amanha" in t:
+    if re.search(r"\bamanha\b", t):
         return (now + timedelta(days=1)).strftime("%Y-%m-%d")
-    if "hoje" in t:
+    if re.search(r"\bhoje\b", t):
         return now.strftime("%Y-%m-%d")
 
     match = re.search(r"\b(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?\b", t)
     if match:
         return parse_br_date(match.group(0))
+
+    # Natural follow-ups: "e dia 16?", "pro dia 3", "dia 28 tem horário?"
+    day_match = re.search(r"\b(?:dia|pro dia|para o dia|para dia)\s+(\d{1,2})\b", t)
+    if day_match:
+        day = int(day_match.group(1))
+        year, month = now.year, now.month
+        for _ in range(13):
+            try:
+                candidate = datetime(year, month, day, tzinfo=TZ)
+            except ValueError:
+                candidate = None
+            if candidate and candidate.date() >= now.date():
+                return candidate.strftime("%Y-%m-%d")
+            month += 1
+            if month == 13:
+                month = 1
+                year += 1
 
     weekdays = {
         "segunda": 0, "segunda feira": 0,
@@ -1228,7 +1247,42 @@ async def wa_smart_action(
     date_str = wa_date_from_sentence(text)
     time_str = wa_time_from_sentence(text)
     wants_booking = any(x in t for x in ("agendar", "marcar", "quero fazer", "quero esse", "quero essa", "pode ser"))
-    asks_availability = any(x in t for x in ("tem horario", "tem vaga", "horario livre", "disponivel", "tem amanha", "tem hoje"))
+    asks_availability = any(x in t for x in (
+        "tem horario", "tem vaga", "horario livre", "disponivel",
+        "tem amanha", "tem hoje", "tem para", "tem pro dia", "tem no dia",
+    ))
+
+    previous_user = (wa_recent_user_messages(memory, 1) or [""])[-1]
+    previous_t = wa_normalize(previous_user)
+    previous_asked_availability = any(x in previous_t for x in (
+        "tem horario", "tem vaga", "horario livre", "disponivel",
+        "horarios", "horário", "vaga",
+    ))
+    availability_followup = bool(date_str and previous_asked_availability and not wants_booking)
+
+    # Availability does not require choosing a procedure first. The website and
+    # WhatsApp consult the same day/slot source of truth.
+    if date_str and not service and (asks_availability or availability_followup):
+        day = await get_day_availability(date_str)
+        if not day["scheduled_open"]:
+            return wa_reply(
+                f"Em *{fmt_date_br(date_str)}* é {day['weekday_name']} e o estúdio não abre 😔 Me fala outro dia."
+            )
+        if not day["open"]:
+            return wa_reply(
+                f"Em *{fmt_date_br(date_str)}* o estúdio está *fechado* 😔 "
+                f"{day['closed_reason'] or 'Me fala outro dia que eu olho.'}"
+            )
+        available = [s["time"] for s in day["slots"] if s["available"]]
+        if not available:
+            return wa_reply(
+                f"Pra *{fmt_date_br(date_str)}* ({day['weekday_name']}) já está tudo ocupado 😔 Quer que eu veja outro dia?"
+            )
+        return wa_reply(
+            f"Tenho sim 💛 Em *{fmt_date_br(date_str)}* ({day['weekday_name']}) estão livres: "
+            + ", ".join(available)
+            + ". Quer marcar algum desses?"
+        )
 
     if service and date_str and (wants_booking or asks_availability or state == "menu"):
         day = await get_day_availability(date_str)
@@ -1426,16 +1480,8 @@ async def wa_natural_reply(text: str, state: str = "menu", phone: str = "", memo
         return "Faço sim ✨💛 Tem Design com Henna, Brow Lamination e Design Simples. Me fala qual te interessa que eu te passo tudo certinho."
 
     asks_availability = any(x in t for x in ("tem horario", "tem vaga", "horario livre", "disponivel"))
-    if asks_availability and ("amanha" in t or "hoje" in t):
-        ds = parse_br_date("amanhã" if "amanha" in t else "hoje")
-        if ds:
-            available = await wa_available_slots(ds)
-            if available:
-                return f"Tenho sim 💛 Para *{fmt_date_br(ds)}* estão livres: " + ", ".join(available) + ". Quer marcar algum desses?"
-            return f"Pra *{fmt_date_br(ds)}* não apareceu nenhum horário livre 😔 Se quiser, me fala outra data que eu olho pra você."
-
     if asks_availability:
-        return "Consigo olhar pra você sim 💛 Qual dia você quer? Pode me mandar tipo *18/09*, *hoje* ou *amanhã*."
+        return "Consigo olhar pra você sim 💛 Qual dia você quer? Pode mandar *16/09*, *dia 16*, *quarta*, *amanhã* ou *depois de amanhã*."
 
     if any(x in t for x in ("quero agendar", "quero marcar", "quero fazer", "marca pra mim")):
         return "Bora 😊💛 O que você quer fazer: *cílios, unhas ou sobrancelhas*?"
@@ -1671,14 +1717,18 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         weekday = day["weekday_name"]
         if not available:
             return {"reply": f"😔 Todos os horários de *{fmt_date_br(ds)}* ({weekday}) já estão ocupados.\nTente outra data!"}
-        lines = [f"🕐 Horários livres em *{fmt_date_br(ds)}* ({weekday}):\n"]
-        for i, t in enumerate(available, 1):
-            lines.append(f"*{i}* — {t}")
         if state == "avail_date":
             await set_state("menu")
-            return wa_reply("\n".join(lines) + "\n\nSe quiser marcar, toca em *Agendar horário*.", wa_main_menu_ui())
+            return wa_reply(
+                f"🕐 Em *{fmt_date_br(ds)}* ({weekday}) estão livres: "
+                + ", ".join(available)
+                + ". Quer marcar algum desses?"
+            )
         await set_state("book_time", {**sdata, "date": ds, "slots": available})
-        return wa_reply("\n".join(lines), wa_slots_ui(ds, available))
+        return wa_reply(
+            f"🕐 Horários livres em *{fmt_date_br(ds)}* ({weekday}). Escolhe um:",
+            wa_slots_ui(ds, available),
+        )
 
     if state == "book_time":
         slots = sdata.get("slots", [])
