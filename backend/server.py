@@ -1009,7 +1009,7 @@ def wa_main_menu_ui() -> dict:
         "type": "list",
         "title": "Araújo Deluxe ✨",
         "text": "O que você quer fazer?",
-        "button_text": "Ver opções",
+        "button_text": "Abrir menu",
         "footer": "Ou simplesmente me escreva do seu jeito 💛",
         "sections": [{
             "title": "Atendimento",
