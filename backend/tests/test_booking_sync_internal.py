@@ -177,5 +177,35 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         fake_db.blocks.insert_one.assert_not_awaited()
 
 
+
+
+    async def test_secondary_slot_is_occupied_not_duplicate_booking_card(self):
+        fake = MagicMock()
+        fake.bookings.find.return_value.to_list = AsyncMock(return_value=[{
+            "id": "b1",
+            "service_id": "glamour",
+            "service_name": "Volume Glamour",
+            "date": "2026-09-15",
+            "time": "15:30",
+            "status": "confirmada",
+            "duration_minutes": 150,
+            "buffer_minutes": 0,
+        }])
+        fake.blocks.find.return_value.to_list = AsyncMock(return_value=[])
+        with patch.object(server, "db", fake), patch.object(server, "slot_in_past", return_value=False):
+            states = await server.get_slot_states("2026-09-15")
+        by_time = {s["time"]: s for s in states}
+        self.assertEqual(by_time["15:30"]["reason"], "agendado")
+        self.assertEqual(by_time["15:30"]["booking"]["id"], "b1")
+        self.assertEqual(by_time["17:00"]["reason"], "ocupado")
+        self.assertIsNone(by_time["17:00"]["booking"])
+        self.assertEqual(by_time["17:00"]["occupied_by"]["booking_id"], "b1")
+
+    def test_all_catalog_deposits_are_capped_at_price(self):
+        for service in server.SERVICES:
+            with self.subTest(service=service["id"]):
+                self.assertLessEqual(service["deposit"], service["price"])
+
+
 if __name__ == "__main__":
     unittest.main()

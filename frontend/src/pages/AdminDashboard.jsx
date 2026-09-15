@@ -26,6 +26,20 @@ export default function AdminDashboard() {
   const [filter, setFilter] = useState("");
   const [proof, setProof] = useState(null);
   const [proofAction, setProofAction] = useState(null);
+  const [conversation, setConversation] = useState(null);
+  const [conversationLoading, setConversationLoading] = useState(false);
+
+  const viewConversation = async (b) => {
+    setConversationLoading(true);
+    try {
+      const { data } = await api.get(`/admin/customers/${encodeURIComponent(b.client_phone)}/conversation`);
+      setConversation({ ...data, booking: b });
+    } catch (e) {
+      toast.error(apiError(e));
+    } finally {
+      setConversationLoading(false);
+    }
+  };
 
   const viewProof = async (b) => {
     try {
@@ -199,6 +213,11 @@ export default function AdminDashboard() {
                         </button>
                       </div>
                     </div>
+                  ) : s.reason === "ocupado" ? (
+                    <div className="mt-3 text-xs text-muted-foreground">
+                      <p className="font-semibold text-foreground">Ocupado pelo atendimento anterior</p>
+                      <p className="mt-1">{s.occupied_by?.service_name || "Procedimento"} · {s.occupied_by?.start}–{s.occupied_by?.until}</p>
+                    </div>
                   ) : s.reason === "bloqueado" ? (
                     <button onClick={() => unblock(s.block_id)} className="mt-3 w-full rounded-full border border-border text-foreground text-xs font-semibold py-2 flex items-center justify-center gap-1.5 hover:border-primary transition-colors duration-300" data-testid={`admin-unblock-${s.time.replace(":", "")}`}>
                       <LockSimpleOpen size={14} /> Liberar horário
@@ -286,6 +305,14 @@ export default function AdminDashboard() {
                             Reativar
                           </button>
                         )}
+                        <button
+                          onClick={() => viewConversation(b)}
+                          disabled={conversationLoading}
+                          className="mt-1 block text-xs text-muted-foreground font-semibold hover:text-primary hover:underline disabled:opacity-50"
+                          data-testid={`admin-row-conversation-${b.code}`}
+                        >
+                          Conversa
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -296,6 +323,35 @@ export default function AdminDashboard() {
         )}
         {tab === "whatsapp" && <WhatsAppPanel />}
       </main>
+
+      {conversation && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6" onClick={() => setConversation(null)} data-testid="admin-conversation-modal">
+          <div className="bg-white rounded-3xl p-6 max-w-2xl w-full max-h-[85vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <p className="font-display text-xl text-foreground">Conversa · {conversation.booking?.client_name}</p>
+                <p className="text-muted-foreground text-xs mt-1">{conversation.booking?.client_phone}</p>
+                {conversation.last_service_name && <p className="text-muted-foreground text-xs mt-1">Último interesse: {conversation.last_service_name}</p>}
+              </div>
+              <button onClick={() => setConversation(null)} className="text-muted-foreground hover:text-foreground" data-testid="admin-conversation-close">
+                <X size={22} />
+              </button>
+            </div>
+            {conversation.history?.length ? (
+              <div className="space-y-3">
+                {conversation.history.map((item, index) => (
+                  <div key={index} className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm ${item.role === "user" ? "ml-auto bg-foreground text-white" : "bg-muted text-foreground"}`}>
+                    <p className="whitespace-pre-wrap break-words">{item.text}</p>
+                    {item.at && <p className={`text-[10px] mt-2 ${item.role === "user" ? "text-white/60" : "text-muted-foreground"}`}>{new Date(item.at).toLocaleString("pt-BR")}</p>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-sm py-8 text-center">Ainda não há histórico de conversa salvo para este número.</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {proof && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6" onClick={() => setProof(null)} data-testid="admin-proof-modal">
@@ -366,6 +422,7 @@ const SlotBadge = ({ slot }) => {
     if (slot.booking.status === "pendente") return <span className="rounded-full bg-amber-100 text-amber-800 text-xs font-semibold px-3 py-1">sinal pendente</span>;
     return <span className="rounded-full bg-primary/15 text-primary text-xs font-semibold px-3 py-1">agendado</span>;
   }
+  if (slot.reason === "ocupado") return <span className="rounded-full bg-violet-100 text-violet-700 text-xs font-semibold px-3 py-1">ocupado</span>;
   if (slot.reason === "bloqueado") return <span className="rounded-full bg-stone-200 text-stone-600 text-xs font-semibold px-3 py-1">bloqueado</span>;
   if (slot.reason === "passado") return <span className="rounded-full bg-muted text-muted-foreground text-xs font-semibold px-3 py-1">passado</span>;
   return <span className="rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold px-3 py-1">livre</span>;

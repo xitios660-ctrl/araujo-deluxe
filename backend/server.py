@@ -76,6 +76,9 @@ SERVICES = [
     {"id": "blindagem", "name": "Blindagem", "category": "unhas", "price": 70, "deposit": 15, "duration": "1h30", "description": "Proteção da unha natural contra quebras, ideal para fortalecer."},
 ]
 
+for service in SERVICES:
+    service["deposit"] = min(service.get("deposit", 0), service.get("price", 0))
+
 SERVICES_BY_ID = {s["id"]: s for s in SERVICES}
 BOOKING_STATUSES = ["pendente", "confirmada", "concluida", "cancelada"]
 
@@ -230,6 +233,11 @@ def time_to_minutes(time_str: str) -> int:
     return h * 60 + m
 
 
+def minutes_to_time(value: int) -> str:
+    value = max(0, value)
+    return f"{(value // 60) % 24:02d}:{value % 60:02d}"
+
+
 def duration_to_minutes(value: str) -> int:
     normalized = unicodedata.normalize("NFKD", (value or "").lower())
     t = "".join(ch for ch in normalized if not unicodedata.combining(ch)).strip()
@@ -300,7 +308,20 @@ async def get_slot_states(date_str: str, service_id: Optional[str] = None) -> Li
                     None,
                 )
                 if collision:
-                    state.update(available=False, reason="agendado", booking=collision)
+                    if collision.get("time") == t:
+                        state.update(available=False, reason="agendado", booking=collision)
+                    else:
+                        _, occupied_until = booking_interval_minutes(collision)
+                        state.update(
+                            available=False,
+                            reason="ocupado",
+                            occupied_by={
+                                "booking_id": collision.get("id"),
+                                "service_name": collision.get("service_name"),
+                                "start": collision.get("time"),
+                                "until": minutes_to_time(occupied_until),
+                            },
+                        )
         result.append(state)
     return result
 
@@ -618,6 +639,44 @@ async def admin_bookings(status: Optional[str] = None, date: Optional[str] = Non
         query["date"] = date
     bookings = await db.bookings.find(query, {"_id": 0}).sort([("date", -1), ("time", 1)]).to_list(500)
     return bookings
+
+
+@api_router.get("/admin/customers/{phone}/conversation")
+async def admin_customer_conversation(phone: str, user: dict = Depends(get_current_user)):
+    raw = _digits(phone)
+    canonical = canonical_phone(phone)
+    candidates = []
+    for value in (raw, canonical, f"55{canonical}" if canonical else ""):
+        if value and value not in candidates:
+            candidates.append(value)
+
+    memory = await db.wa_memories.find_one({"_id": {"$in": candidates}}, {"_id": 0})
+    session = await db.wa_sessions.find_one({"phone": {"$in": candidates}}, {"_id": 0})
+    history = []
+    for item in (memory or {}).get("history", [])[-30:]:
+        role = item.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        text_value = (item.get("text") or "").strip()
+        if not text_value:
+            continue
+        history.append({
+            "role": role,
+            "text": text_value[:1200],
+            "at": item.get("at"),
+        })
+
+    last_service_id = (memory or {}).get("last_service_id")
+    return {
+        "phone": phone,
+        "name": (memory or {}).get("name"),
+        "last_seen": (memory or {}).get("last_seen"),
+        "message_count": (memory or {}).get("message_count", 0),
+        "last_service_id": last_service_id,
+        "last_service_name": SERVICES_BY_ID.get(last_service_id, {}).get("name") if last_service_id else None,
+        "session_state": (session or {}).get("state"),
+        "history": history,
+    }
 
 
 @api_router.patch("/admin/bookings/{booking_id}")
