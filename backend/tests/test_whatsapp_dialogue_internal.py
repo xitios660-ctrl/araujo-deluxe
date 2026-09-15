@@ -31,6 +31,47 @@ class AvailabilityLanguageTests(unittest.IsolatedAsyncioTestCase):
         now = server.datetime(2026, 9, 30, 21, 38, tzinfo=server.TZ)
         self.assertEqual(server.wa_date_from_sentence("dia 2", now), "2026-10-02")
 
+    async def test_daypart_without_date_is_remembered_until_date_arrives(self):
+        fake = MagicMock()
+        fake.wa_preferences.find_one = AsyncMock(return_value=None)
+        fake.wa_preferences.update_one = AsyncMock()
+        fake.wa_memories.find_one = AsyncMock(return_value={"history": [], "message_count": 0})
+        fake.wa_memories.update_one = AsyncMock()
+        session = {"state": "menu", "data": {}}
+
+        async def find_session(*args, **kwargs):
+            return {"state": session["state"], "data": dict(session["data"])}
+
+        async def update_session(query, update, **kwargs):
+            values = update["$set"]
+            session["state"] = values["state"]
+            session["data"] = dict(values["data"])
+
+        fake.wa_sessions.find_one = AsyncMock(side_effect=find_session)
+        fake.wa_sessions.update_one = AsyncMock(side_effect=update_session)
+
+        day = {
+            "date": "2026-09-19", "weekday_name": "Sábado",
+            "scheduled_open": True, "open": True, "day_blocked": False,
+            "closed_reason": None, "slots": [],
+        }
+        with patch.object(server, "db", fake), patch.object(server, "get_day_availability", AsyncMock(return_value=day)):
+            first = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="qual horário você tem de tarde?", push_name="Cliente"),
+                auth={"test": True},
+            )
+            self.assertIn("qual dia", first["reply"].lower())
+            self.assertEqual(session["state"], "avail_date")
+            self.assertEqual(session["data"]["daypart"], "afternoon")
+
+            second = await server.whatsapp_incoming(
+                server.WAIncoming(phone="5511999999999", text="19/09/2026", push_name="Cliente"),
+                auth={"test": True},
+            )
+            self.assertIn("de tarde", second["reply"].lower())
+            self.assertEqual(session["state"], "book_category")
+            self.assertEqual(session["data"]["daypart"], "afternoon")
+
     async def test_specific_date_availability_without_service(self):
         day = {
             "date": "2026-09-16", "weekday_name": "Quarta-feira",

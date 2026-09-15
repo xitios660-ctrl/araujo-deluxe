@@ -2274,6 +2274,19 @@ async def wa_smart_action(
         "tem amanha", "tem hoje", "tem para", "tem pro dia", "tem no dia",
     ))
 
+    if asks_availability and daypart and not date_str and state == "menu":
+        await set_state("avail_date", {"daypart": daypart})
+        label = {
+            "morning": "de manhã",
+            "afternoon": "de tarde",
+            "late_afternoon": "mais pro final da tarde",
+            "evening": "à noite",
+        }.get(daypart, "nesse período")
+        return wa_reply(
+            f"Claro 😊 Posso filtrar os horários *{label}*. Qual dia você quer consultar? "
+            "Pode mandar *amanhã*, *sábado* ou *20/09*."
+        )
+
     previous_user = (wa_recent_user_messages(memory, 1) or [""])[-1]
     previous_t = wa_normalize(previous_user)
     previous_asked_availability = any(x in previous_t for x in (
@@ -3495,9 +3508,16 @@ async def whatsapp_incoming(data: WAIncoming, auth=Depends(require_bot_lease)):
         available = [s["time"] for s in day["slots"] if s["available"]]
         weekday = day["weekday_name"]
         if state == "avail_date":
-            await set_state("book_category", {"date": ds})
+            daypart = sdata.get("daypart")
+            await set_state("book_category", {"date": ds, "daypart": daypart})
+            period = {
+                "morning": " de manhã",
+                "afternoon": " de tarde",
+                "late_afternoon": " mais pro final da tarde",
+                "evening": " à noite",
+            }.get(daypart, "")
             return wa_reply(
-                f"Consigo olhar *{fmt_date_br(ds)}* 💛 Qual procedimento você quer? "
+                f"Consigo olhar *{fmt_date_br(ds)}*{period} 💛 Qual procedimento você quer? "
                 "A duração muda os horários que realmente encaixam.",
                 wa_category_ui(),
             )
