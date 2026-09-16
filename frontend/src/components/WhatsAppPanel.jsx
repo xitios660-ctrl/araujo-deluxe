@@ -6,6 +6,7 @@ import { api, apiError } from "../lib/api";
 export const WhatsAppPanel = () => {
   const [status, setStatus] = useState(null);
   const [qr, setQr] = useState(null);
+  const [relinking, setRelinking] = useState(false);
 
   const poll = useCallback(async () => {
     try {
@@ -29,11 +30,17 @@ export const WhatsAppPanel = () => {
   }, [poll]);
 
   const logout = async () => {
+    setRelinking(true);
     try {
       await api.post("/admin/whatsapp/logout");
-      toast.success("Sessão encerrada. Um novo QR Code aparecerá em instantes.");
+      setQr(null);
+      setStatus({ connected: false, offline: false, halted: null, reconnecting: true });
+      toast.success("Preparando um novo QR Code…");
+      setTimeout(() => poll(), 1200);
     } catch (e) {
-      toast.error(apiError(e));
+      toast.error(apiError(e, "Não foi possível gerar um novo QR Code."));
+    } finally {
+      setRelinking(false);
     }
   };
 
@@ -102,6 +109,18 @@ export const WhatsAppPanel = () => {
               <li>Aponte a câmera para o QR Code ao lado</li>
             </ol>
             <p className="mt-4 text-xs">O QR Code se renova sozinho. Depois de escanear, o bot fica online e responde os clientes automaticamente.</p>
+
+            {status?.halted && (
+              <button
+                onClick={logout}
+                disabled={relinking}
+                className="mt-5 rounded-full bg-foreground text-white text-sm font-semibold px-5 py-3 flex items-center gap-2 hover:bg-foreground/85 disabled:opacity-50 transition-colors duration-300"
+                data-testid="whatsapp-relink-button"
+              >
+                <QrCode size={18} />
+                {relinking ? "Preparando QR Code…" : "Gerar novo QR Code"}
+              </button>
+            )}
           </div>
         </div>
       )}
