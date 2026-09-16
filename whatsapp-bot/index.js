@@ -149,7 +149,7 @@ async function start() {
         const stopped = ["loggedOut", "forbidden", "connectionReplaced", "badSession"]
           .map(key => baileys.DisconnectReason[key]).filter(value => value !== undefined);
         if (stopped.includes(code)) {
-          halted = "Sessão encerrada ou recusada pelo WhatsApp. Use 'Desconectar / trocar número' no painel para gerar um novo QR Code.";
+          halted = "Esta sessão foi encerrada pelo WhatsApp e precisa ser vinculada novamente. Gere um novo QR Code abaixo.";
         } else {
           // Network hiccups and WhatsApp restart requests should recover fast.
           schedule(2000);
@@ -425,19 +425,30 @@ app.post("/send-image", async (req, res) => {
 });
 app.post("/logout", async (req, res) => {
   try {
-    if (!hasLease) throw new Error("Sessão em uso por outra instância");
     clearTimeout(timer); timer = null;
-    halted = "Trocando sessão";
+    halted = "Preparando um novo QR Code";
     const previous = sock;
     disconnectTransport();
-    if (auth) await auth.flush();
+
+    // A halted WhatsApp session stops the heartbeat, so the 60s lease can
+    // expire before the manager presses the recovery button. Reacquire it
+    // explicitly so an old/invalid session can always be cleared safely.
+    await renewLease({ initial: true });
+
+    if (auth) await auth.flush().catch(() => {});
     // This is the only path that intentionally deletes stored credentials.
     await storageRequest("DELETE");
     if (previous) await previous.logout().catch(() => {});
-    auth = null; halted = null; starting = false;
-    schedule();
-    res.json({ ok: true });
-  } catch (e) { res.status(503).json({ ok: false, error: e.message }); }
+    auth = null;
+    halted = null;
+    starting = false;
+    attempts = 0;
+    schedule(1000);
+    res.json({ ok: true, relinking: true });
+  } catch (e) {
+    halted = "Não foi possível preparar o novo QR Code. Tente novamente em alguns segundos.";
+    res.status(503).json({ ok: false, error: e.message });
+  }
 });
 async function shutdown() {
   if (closing) return;
