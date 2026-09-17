@@ -18,7 +18,9 @@ jobs:
           python-version: "3.11"
       - run: npm ci --prefix whatsapp-bot --no-audit --no-fund
       - run: node --check whatsapp-bot/index.js
-      - run: node --test whatsapp-bot/reliability.test.js
+      - run: node --check whatsapp-bot/resilient-runner.js
+      - run: node --check whatsapp-bot/recovery-store.js
+      - run: node --test whatsapp-bot/*.test.js
       - run: pip install -r backend/requirements-deploy.txt
       - run: python -m py_compile backend/server.py backend/bot_process.py
       - run: python -m unittest discover -s backend/tests -p "test_*internal.py" -v
