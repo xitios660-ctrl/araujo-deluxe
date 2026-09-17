@@ -23,7 +23,7 @@ jobs:
       - run: node --test whatsapp-bot/*.test.js
       - run: pip install -r backend/requirements-deploy.txt
       - run: python -m py_compile backend/server.py backend/bot_process.py
-      - run: python -m unittest discover -s backend/tests -p "test_*internal.py" -v
+      - run: python backend/tests/run_internal_suite.py
         env:
           PYTHONPATH: backend
       - run: python -m unittest discover -s backend/tests -p "test_bot_process.py" -v
