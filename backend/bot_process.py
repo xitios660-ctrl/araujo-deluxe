@@ -83,7 +83,7 @@ class BotProcess:
         }
         while True:
             try:
-                self.process = await asyncio.create_subprocess_exec(node, "index.js", cwd=directory, env=env)
+                self.process = await asyncio.create_subprocess_exec(node, "-r", "./ai-hook.js", "index.js", cwd=directory, env=env)
                 code = await self.process.wait()
                 logger.error("Bot encerrou com código %s; nova tentativa em 10 segundos", code)
             except OSError:
