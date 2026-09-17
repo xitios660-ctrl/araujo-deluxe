@@ -91,8 +91,8 @@ async function drainRecoveryReplies(current) {
         await recovery.markDelivered(item.id);
         console.log("Resposta recuperada após reconexão:", item.id);
       } catch (e) {
-        console.warn("Resposta continua pendente após reconexão:", e.message);
-        break;
+        console.warn("Resposta continua pendente após reconexão; seguindo para as próximas da fila:", e.message);
+        continue;
       } finally {
         if (showPresence && current === sock) await current.sendPresenceUpdate("paused", item.jid).catch(() => {});
       }
