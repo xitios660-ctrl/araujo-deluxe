@@ -5,6 +5,7 @@
 // availability, payments and proof status. This hook only makes safe replies
 // more natural and context-aware.
 
+const { explicitGenericCategory } = require("./category-reset");
 const originalFetch = globalThis.fetch.bind(globalThis);
 const OPENAI_KEY = (process.env.OPENAI_API_KEY || "").trim();
 const OPENAI_MODEL = (process.env.OPENAI_MODEL || "gpt-5.6-luna").trim();
@@ -152,6 +153,30 @@ REGRAS INVIOLÁVEIS:
   }
 }
 
+async function silentlyResetStaleCategory(url, init, requestBody, phone) {
+  const category = explicitGenericCategory(requestBody?.text);
+  if (!category) return;
+
+  try {
+    const resetBody = {
+      ...requestBody,
+      text: "menu",
+      image_base64: null,
+      image_mime: null,
+    };
+    const resetResponse = await originalFetch(url, {
+      ...init,
+      body: JSON.stringify(resetBody),
+    });
+    if (resetResponse.ok) {
+      historyByPhone.delete(phone);
+      console.log(`Contexto antigo limpo antes de trocar a categoria para ${category}.`);
+    }
+  } catch (error) {
+    console.warn("Não foi possível limpar o contexto antigo antes da troca de categoria:", error.message);
+  }
+}
+
 globalThis.fetch = async function aiAwareFetch(url, init = {}) {
   if (!isIncomingRequest(url, init)) return originalFetch(url, init);
 
@@ -159,6 +184,12 @@ globalThis.fetch = async function aiAwareFetch(url, init = {}) {
   try {
     requestBody = typeof init.body === "string" ? JSON.parse(init.body) : null;
   } catch (_) {}
+
+  const userText = String(requestBody?.text || "").trim();
+  const phone = String(requestBody?.phone || "").replace(/\D/g, "");
+  if (requestBody && phone) {
+    await silentlyResetStaleCategory(url, init, requestBody, phone);
+  }
 
   const response = await originalFetch(url, init);
   if (!response.ok || !requestBody) return response;
@@ -170,9 +201,7 @@ globalThis.fetch = async function aiAwareFetch(url, init = {}) {
     return response;
   }
 
-  const userText = String(requestBody.text || "").trim();
   const systemReply = typeof data?.reply === "string" ? data.reply : "";
-  const phone = String(requestBody.phone || "").replace(/\D/g, "");
   if (!systemReply || shouldKeepExact(userText, systemReply, requestBody)) {
     remember(phone, "user", userText);
     remember(phone, "assistant", systemReply);
