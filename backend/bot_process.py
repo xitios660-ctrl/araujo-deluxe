@@ -19,7 +19,7 @@ from pymongo.errors import DuplicateKeyError
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo("America/Sao_Paulo")
 HISTORY_RESET_MIGRATION = "2026-09-15-clean-test-conversation-history-v1"
-CLIENT_RESET_MIGRATION = "2026-09-15-clear-three-test-clients-v1"
+CLIENT_RESET_MIGRATION = "2026-09-17-clear-agenda-for-retest-v2"
 OWNER_COMMAND_RE = re.compile(r"^\s*(aprovar|aprova|aprovado|rejeitar|rejeita|recusar|recusa)\s+(AD[- ]?[A-Za-z0-9]{4,12})\s*$", re.I)
 
 
