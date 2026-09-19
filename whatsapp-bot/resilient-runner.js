@@ -39,6 +39,13 @@ function patchSource(input) {
 
   source = replaceOnce(
     source,
+    '      syncFullHistory: false,',
+    '      syncFullHistory: true,',
+    "sync offline history",
+  );
+
+  source = replaceOnce(
+    source,
     '      markOnlineOnConnect: false,',
     '      markOnlineOnConnect: true,',
     "online presence",
@@ -102,6 +109,13 @@ async function drainRecoveryReplies(current) {
 }`;
 
   source = replaceOnce(source, safeSendBlock, safeSendWithRecovery, "durable recovery helpers");
+
+  source = replaceOnce(
+    source,
+    '    current.ev.on("messages.upsert", ({ messages, type }) => {\n      if (type !== "notify" || closing) return;',
+    '    current.ev.on("messages.upsert", ({ messages, type }) => {\n      // append contains history synchronized after reconnect, including messages received while this process was offline.\n      if (!["notify", "append"].includes(type) || closing) return;',
+    "process synchronized offline messages",
+  );
 
   source = replaceOnce(
     source,
