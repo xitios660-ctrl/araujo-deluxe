@@ -22,7 +22,7 @@ class StableAvailabilityDateTests(unittest.IsolatedAsyncioTestCase):
     def test_past_day_month_rolls_to_next_year(self):
         now = server.datetime(2026, 9, 17, 8, 0, tzinfo=server.TZ)
         self.assertEqual(server.wa_date_from_sentence("dia 16/09", now), "2027-09-16")
-        self.assertEqual(server.wa_date_from_sentence("dia 18/09", now), "2026-09-18")
+        self.assertEqual(server.wa_date_from_sentence("dia 18/09", now), "2027-09-18")
 
     async def test_specific_future_date_availability_without_service(self):
         day = {
