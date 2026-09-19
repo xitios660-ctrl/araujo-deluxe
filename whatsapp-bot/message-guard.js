@@ -1,8 +1,8 @@
 const { createHash } = require("node:crypto");
 class MessageGuard {
-  constructor({ gapMs = 3000, now = Date.now, maxPending = 25, failurePauseMs = 30000 } = {}) {
+  constructor({ gapMs = 3000, now = Date.now, maxPending = 25, failurePauseMs = 30000, maxSeen = 10000 } = {}) {
     Object.assign(this, {
-      gapMs, now, maxPending, failurePauseMs,
+      gapMs, now, maxPending, failurePauseMs, maxSeen,
       pending: 0, last: 0, tail: Promise.resolve(),
       seen: new Map(), sent: new Map(), counts: new Map(), global: [],
       blocked: new Set(), failures: 0, pausedUntil: 0,
@@ -10,10 +10,19 @@ class MessageGuard {
   }
   accept(jid, id) {
     if (!id) return false;
-    for (const [key, time] of this.seen) if (this.now() - time >= 3600000) this.seen.delete(key);
+    const now = this.now();
+    for (const [key, time] of this.seen) if (now - time >= 3600000) this.seen.delete(key);
     const key = jid + ":" + id;
-    if (this.seen.has(key) || this.seen.size >= 10000) return false;
-    this.seen.set(key, this.now()); return true;
+    if (this.seen.has(key)) return false;
+    // The cache is only for replay suppression. Reaching its safety cap must not
+    // turn into an hour-long outage where every new customer message is dropped.
+    // Map preserves insertion order, so evict the oldest ids before accepting new ones.
+    while (this.seen.size >= this.maxSeen) {
+      const oldest = this.seen.keys().next().value;
+      if (oldest === undefined) break;
+      this.seen.delete(oldest);
+    }
+    this.seen.set(key, now); return true;
   }
   send(contact, payload, deliver, { dedupeKey = null } = {}) {
     if (this.pending >= this.maxPending) return Promise.reject(new Error("Fila cheia"));
