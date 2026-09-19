@@ -37,19 +37,8 @@ function patchSource(input) {
     "initialize recovery",
   );
 
-  source = replaceOnce(
-    source,
-    '      syncFullHistory: false,',
-    '      syncFullHistory: true,',
-    "sync offline history",
-  );
-
-  source = replaceOnce(
-    source,
-    '      markOnlineOnConnect: false,',
-    '      markOnlineOnConnect: true,',
-    "online presence",
-  );
+  source = replaceOnce(source, '      syncFullHistory: false,', '      syncFullHistory: true,', "sync offline history");
+  source = replaceOnce(source, '      markOnlineOnConnect: false,', '      markOnlineOnConnect: true,', "online presence");
 
   source = replaceOnce(
     source,
@@ -75,7 +64,9 @@ function patchSource(input) {
   const safeSendWithRecovery = `${safeSendBlock}
 
 function recoveryText(data, reply) {
-  if (process.env.WHATSAPP_INTERACTIVE_LISTS !== "1" && data?.ui) return uiTextFallback(data.ui, reply);
+  // Recovery currently replays plain text. Always persist the text fallback for
+  // menus so a reconnect never strips the customer's available choices.
+  if (data?.ui) return uiTextFallback(data.ui, reply);
   return String(reply || "");
 }
 
