@@ -189,14 +189,16 @@ class BotProcess:
         if now.hour < 7:
             return
         today = now.strftime("%Y-%m-%d")
+        current_time = now.strftime("%H:%M")
         stale_before = (now - timedelta(minutes=5)).isoformat()
         while True:
-            # A reminder is first claimed as "sending" to prevent duplicate sends.
-            # If the worker dies after claiming it, that claim becomes stale after
-            # five minutes and is eligible for retry instead of being lost forever.
+            # Never send a "your appointment is today" reminder after the
+            # appointment time has already passed, for example after a long
+            # outage/reconnect. ISO HH:MM strings sort chronologically.
             booking = await db.bookings.find_one_and_update(
                 {
                     "date": today,
+                    "time": {"$gt": current_time},
                     "status": "confirmada",
                     "$or": [
                         {"reminder_sent_at": {"$exists": False}},
