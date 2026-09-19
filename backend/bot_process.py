@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -75,12 +75,7 @@ class BotProcess:
         self.task = asyncio.create_task(self._supervise(node, directory))
 
     async def _supervise(self, node, directory):
-        env = {
-            **os.environ,
-            "BOT_PORT": str(self.url.port or 3002),
-            "BOT_HOST": self.url.hostname,
-            "BACKEND_URL": f"http://127.0.0.1:{os.environ.get('PORT', '8001')}",
-        }
+        env = {**os.environ, "BOT_PORT": str(self.url.port or 3002), "BOT_HOST": self.url.hostname, "BACKEND_URL": f"http://127.0.0.1:{os.environ.get('PORT', '8001')}"}
         while True:
             try:
                 self.process = await asyncio.create_subprocess_exec(node, "-r", "./ai-hook.js", "resilient-runner.js", cwd=directory, env=env)
@@ -99,11 +94,6 @@ class BotProcess:
             await self._clear_test_clients_once(db)
             while True:
                 try:
-                    # Owner approval/rejection messages are persisted by the WhatsApp
-                    # bot in wa_memories. Process them on every background tick so a
-                    # payment review sent through WhatsApp is reflected in bookings,
-                    # proofs and consequently in the admin panel without waiting for
-                    # another unrelated job.
                     await self._process_owner_review_command(db)
                     if reminder_tick <= 0:
                         await self._send_due_reminders(db)
@@ -160,7 +150,6 @@ class BotProcess:
         match = OWNER_COMMAND_RE.match(text)
         if not match:
             return
-
         approved = match.group(1).lower().startswith("aprov")
         code = match.group(2).upper().replace(" ", "-")
         booking = await db.bookings.find_one({"code": code})
@@ -175,46 +164,22 @@ class BotProcess:
             status = booking.get("proof_status") or "sem análise"
             await self._send_whatsapp(os.environ.get("OWNER_WHATSAPP", ""), f"O comprovante da reserva *{code}* já está com status *{status}*.")
             return
-
         now = datetime.now(TZ).isoformat()
         proof_status = "aprovado" if approved else "rejeitado"
         booking_status = "confirmada" if approved else "pendente"
         payment_status = "confirmado" if approved else "rejeitado"
         reviewer = "owner_whatsapp"
-
-        claimed = await db.proofs.update_one(
-            {"id": proof_id, "status": "em_analise"},
-            {"$set": {"status": proof_status, "reviewed_at": now, "reviewed_by": reviewer}},
-        )
+        claimed = await db.proofs.update_one({"id": proof_id, "status": "em_analise"}, {"$set": {"status": proof_status, "reviewed_at": now, "reviewed_by": reviewer}})
         if claimed.matched_count == 0:
             await self._send_whatsapp(os.environ.get("OWNER_WHATSAPP", ""), f"O comprovante de *{code}* acabou de ser analisado por outra ação. Atualize o painel.")
             return
-
-        await db.bookings.update_one(
-            {"id": booking["id"], "proof_id": proof_id},
-            {"$set": {
-                "proof_status": proof_status,
-                "proof_reviewed_at": now,
-                "proof_reviewed_by": reviewer,
-                "payment_status": payment_status,
-                "status": booking_status,
-            }},
-        )
-
+        await db.bookings.update_one({"id": booking["id"], "proof_id": proof_id}, {"$set": {"proof_status": proof_status, "proof_reviewed_at": now, "proof_reviewed_by": reviewer, "payment_status": payment_status, "status": booking_status}})
         if approved:
             owner_reply = f"✅ Pagamento da reserva *{code}* aprovado pelo WhatsApp. O site já foi atualizado e a cliente será avisada."
-            client_reply = (
-                f"✅ *Pagamento aprovado!*\n\nSeu sinal da reserva *{code}* foi confirmado. 💛\n"
-                f"✨ {booking.get('service_name', '')}\n📅 {booking.get('date', '')} às {booking.get('time', '')}\n\n"
-                "Seu horário está confirmado. Te esperamos!"
-            )
+            client_reply = f"✅ *Pagamento aprovado!*\n\nSeu sinal da reserva *{code}* foi confirmado. 💛\n✨ {booking.get('service_name', '')}\n📅 {booking.get('date', '')} às {booking.get('time', '')}\n\nSeu horário está confirmado. Te esperamos!"
         else:
             owner_reply = f"❌ Comprovante da reserva *{code}* rejeitado pelo WhatsApp. O site já foi atualizado."
-            client_reply = (
-                f"Oi! O comprovante da reserva *{code}* não pôde ser aprovado. 💛\n"
-                "Pode enviar um novo comprovante por aqui ou pelo site para analisarmos novamente."
-            )
-
+            client_reply = f"Oi! O comprovante da reserva *{code}* não pôde ser aprovado. 💛\nPode enviar um novo comprovante por aqui ou pelo site para analisarmos novamente."
         await self._send_whatsapp(booking.get("client_phone", ""), client_reply)
         await self._send_whatsapp(os.environ.get("OWNER_WHATSAPP", ""), owner_reply)
         logger.info("OWNER_PROOF_REVIEW booking_id=%s approved=%s", str(booking.get("id", ""))[:8], approved)
@@ -224,9 +189,20 @@ class BotProcess:
         if now.hour < 7:
             return
         today = now.strftime("%Y-%m-%d")
+        stale_before = (now - timedelta(minutes=5)).isoformat()
         while True:
+            # A reminder is first claimed as "sending" to prevent duplicate sends.
+            # If the worker dies after claiming it, that claim becomes stale after
+            # five minutes and is eligible for retry instead of being lost forever.
             booking = await db.bookings.find_one_and_update(
-                {"date": today, "status": "confirmada", "reminder_sent_at": {"$exists": False}},
+                {
+                    "date": today,
+                    "status": "confirmada",
+                    "$or": [
+                        {"reminder_sent_at": {"$exists": False}},
+                        {"reminder_status": "sending", "reminder_sent_at": {"$lt": stale_before}},
+                    ],
+                },
                 {"$set": {"reminder_sent_at": now.isoformat(), "reminder_status": "sending"}},
                 return_document=ReturnDocument.AFTER,
             )
@@ -247,11 +223,7 @@ class BotProcess:
             return False
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.post(
-                    f"http://127.0.0.1:{self.url.port or 3002}/send",
-                    headers={"X-Bot-Token": token},
-                    json={"phone": digits, "message": message},
-                )
+                response = await client.post(f"http://127.0.0.1:{self.url.port or 3002}/send", headers={"X-Bot-Token": token}, json={"phone": digits, "message": message})
                 response.raise_for_status()
             return True
         except Exception as exc:
