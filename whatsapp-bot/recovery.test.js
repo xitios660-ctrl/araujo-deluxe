@@ -72,7 +72,9 @@ test("same incoming message id cannot create a second pending reply", async () =
 test("runtime patch enables real presence and durable reconnect recovery", () => {
   const indexPath = path.join(__dirname, "index.js");
   const patched = patchSource(fs.readFileSync(indexPath, "utf8"));
-  assert.match(patched, /markOnlineOnConnect: true/);\n  assert.match(patched, /syncFullHistory: true/);\n  assert.match(patched, /\\["notify", "append"\\]\\.includes\\(type\\)/);
+  assert.match(patched, /markOnlineOnConnect: true/);
+  assert.match(patched, /syncFullHistory: true/);
+  assert.ok(patched.includes('["notify", "append"].includes(type)'));
   assert.match(patched, /sendPresenceUpdate\("available"\)/);
   assert.match(patched, /createRecoveryStore/);
   assert.match(patched, /queueReply\(\{ id: recoveryId/);
