@@ -18,7 +18,7 @@ for key, value in {
 import server
 
 
-def available_day(date="2026-09-15", time="15:30"):
+def available_day(date="2026-09-15", time="15:00"):
     return {
         "date": date,
         "weekday_name": "Terça-feira",
@@ -44,33 +44,33 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_site_booking_uses_shared_booking_creator(self):
         booking = {
             "id": "b1", "code": "AD-TEST", "service_id": "glamour", "service_name": "Volume Glamour",
-            "category": "cilios", "price": 140, "deposit": 50, "date": "2026-09-15", "time": "15:30",
+            "category": "cilios", "price": 140, "deposit": 50, "date": "2026-09-15", "time": "15:00",
             "client_name": "Cliente Teste", "client_phone": "11999999999", "notes": "", "status": "pendente",
             "created_at": "2026-09-14T00:00:00+00:00",
         }
         creator = AsyncMock(return_value=booking)
         with patch.object(server, "create_booking_record", creator):
             result = await server.create_booking(server.BookingCreate(
-                service_id="glamour", date="2026-09-15", time="15:30",
+                service_id="glamour", date="2026-09-15", time="15:00",
                 client_name="Cliente Teste", client_phone="11999999999",
             ))
         creator.assert_awaited_once()
         self.assertEqual(result["id"], "b1")
         self.assertEqual(result["date"], "2026-09-15")
-        self.assertEqual(result["time"], "15:30")
+        self.assertEqual(result["time"], "15:00")
 
     async def test_whatsapp_booking_uses_same_shared_booking_creator(self):
         booking = {
             "id": "b2", "code": "AD-WA", "service_id": "glamour", "service_name": "Volume Glamour",
-            "category": "cilios", "price": 140, "deposit": 50, "date": "2026-09-15", "time": "15:30",
+            "category": "cilios", "price": 140, "deposit": 50, "date": "2026-09-15", "time": "15:00",
             "client_name": "Cliente WhatsApp", "client_phone": "5511999999999", "notes": "Agendado pelo bot do WhatsApp",
             "status": "pendente", "created_at": "2026-09-14T00:00:00+00:00",
         }
         creator = AsyncMock(return_value=booking)
         with patch.object(server, "create_booking_record", creator):
-            result = await server.wa_create_booking("glamour", "2026-09-15", "15:30", "Cliente WhatsApp", "5511999999999")
+            result = await server.wa_create_booking("glamour", "2026-09-15", "15:00", "Cliente WhatsApp", "5511999999999")
         creator.assert_awaited_once_with(
-            "glamour", "2026-09-15", "15:30", "Cliente WhatsApp", "5511999999999",
+            "glamour", "2026-09-15", "15:00", "Cliente WhatsApp", "5511999999999",
             "Agendado pelo bot do WhatsApp",
         )
         self.assertEqual(result["id"], "b2")
@@ -86,7 +86,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         closed.update(open=False, day_blocked=True, closed_reason="Dia fechado")
         with patch.object(server, "db", fake_db), patch.object(server, "slot_in_past", return_value=False), patch.object(server, "get_day_availability", AsyncMock(side_effect=[first, closed])):
             with self.assertRaises(server.BookingSlotError) as ctx:
-                await server.create_booking_record("glamour", "2026-09-15", "15:30", "Cliente", "11999999999")
+                await server.create_booking_record("glamour", "2026-09-15", "15:00", "Cliente", "11999999999")
         self.assertEqual(ctx.exception.code, "closed_day")
         fake_db.bookings.insert_one.assert_not_awaited()
         self.assertGreaterEqual(fake_db.booking_slot_locks.delete_one.await_count, 1)
@@ -97,13 +97,13 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         fake_db.booking_slot_locks.insert_one = AsyncMock(side_effect=server.DuplicateKeyError("duplicate"))
         with patch.object(server, "db", fake_db):
             with self.assertRaises(server.BookingSlotError) as ctx:
-                await server.acquire_booking_slot("2026-09-15", "15:30")
+                await server.acquire_booking_slot("2026-09-15", "15:00")
         self.assertEqual(ctx.exception.code, "slot_taken")
 
     async def test_admin_cannot_close_day_with_active_booking(self):
         fake_db = MagicMock()
-        fake_db.bookings.find_one = AsyncMock(return_value={"id": "b1", "time": "15:30"})
-        fake_db.bookings.find.return_value.to_list = AsyncMock(return_value=[{"id": "b1", "time": "15:30", "service_id": "glamour", "duration_minutes": 150, "status": "confirmada"}])
+        fake_db.bookings.find_one = AsyncMock(return_value={"id": "b1", "time": "15:00"})
+        fake_db.bookings.find.return_value.to_list = AsyncMock(return_value=[{"id": "b1", "time": "15:00", "service_id": "glamour", "duration_minutes": 150, "status": "confirmada"}])
         fake_db.blocks.find_one = AsyncMock(return_value=None)
         fake_db.blocks.insert_one = AsyncMock()
         with patch.object(server, "db", fake_db):
@@ -114,7 +114,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_manual_confirmation_sets_payment_status_and_notifies(self):
         booking = {
-            "id": "b-manual", "date": "2026-09-15", "time": "15:30",
+            "id": "b-manual", "date": "2026-09-15", "time": "15:00",
             "client_phone": "5511999999999", "status": "pendente", "service_id": "glamour",
             "service_name": "Volume Glamour", "payment_status": "aguardando_comprovante", "proof_status": None,
         }
@@ -132,7 +132,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_cannot_bypass_proof_in_analysis(self):
         booking = {
-            "id": "b-review", "date": "2026-09-15", "time": "15:30", "client_phone": "5511999999999",
+            "id": "b-review", "date": "2026-09-15", "time": "15:00", "client_phone": "5511999999999",
             "status": "pendente", "service_id": "glamour", "service_name": "Volume Glamour",
             "payment_status": "em_analise", "proof_status": "em_analise",
         }
@@ -147,7 +147,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pending_booking_cannot_jump_to_completed(self):
         booking = {
-            "id": "b-pending", "date": "2026-09-15", "time": "15:30", "client_phone": "5511999999999",
+            "id": "b-pending", "date": "2026-09-15", "time": "15:00", "client_phone": "5511999999999",
             "status": "pendente", "service_id": "glamour", "service_name": "Volume Glamour",
         }
         fake = MagicMock()
@@ -161,7 +161,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelling_booking_closes_pending_proof_consistently(self):
         booking = {
-            "id": "b-proof-cancel", "date": "2026-09-15", "time": "15:30", "client_phone": "11999999999",
+            "id": "b-proof-cancel", "date": "2026-09-15", "time": "15:00", "client_phone": "11999999999",
             "status": "pendente", "service_name": "Volume Glamour", "payment_status": "em_analise",
             "proof_status": "em_analise", "proof_id": "proof-1",
         }
@@ -178,11 +178,11 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updates["proof_status"], "cancelado")
         self.assertEqual(updates["payment_status"], "cancelado")
         self.assertEqual(fake.proofs.update_one.await_args.args[1]["$set"]["status"], "cancelado")
-        release.assert_awaited_once_with("2026-09-15", "15:30")
+        release.assert_awaited_once_with("2026-09-15", "15:00")
 
     async def test_cancel_releases_slot_for_site_and_whatsapp(self):
         booking = {
-            "id": "b1", "date": "2026-09-15", "time": "15:30", "client_phone": "11999999999",
+            "id": "b1", "date": "2026-09-15", "time": "15:00", "client_phone": "11999999999",
             "status": "pendente", "service_name": "Volume Glamour",
         }
         cancelled = {**booking, "status": "cancelada", "payment_status": "cancelado"}
@@ -194,7 +194,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         release = AsyncMock()
         with patch.object(server, "db", fake_db), patch.object(server, "slot_in_past", return_value=False), patch.object(server, "release_booking_slot", release):
             result = await server.cancel_booking("b1", server.CancelInput(phone="11999999999"))
-        release.assert_awaited_once_with("2026-09-15", "15:30")
+        release.assert_awaited_once_with("2026-09-15", "15:00")
         self.assertEqual(result["status"], "cancelada")
         self.assertEqual(result["payment_status"], "cancelado")
 
@@ -207,7 +207,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_long_service_blocks_overlapping_start(self):
         fake = MagicMock()
         fake.bookings.find.return_value.to_list = AsyncMock(return_value=[{
-            "id": "b1", "service_id": "glamour", "date": "2026-09-15", "time": "15:30",
+            "id": "b1", "service_id": "glamour", "date": "2026-09-15", "time": "15:00",
             "status": "confirmada", "duration_minutes": 150, "buffer_minutes": 0,
         }])
         fake.blocks.find.return_value.to_list = AsyncMock(return_value=[])
@@ -273,7 +273,7 @@ class BookingSyncTests(unittest.IsolatedAsyncioTestCase):
         fake = MagicMock()
         fake.bookings.find_one = AsyncMock(return_value=None)
         fake.bookings.find.return_value.to_list = AsyncMock(return_value=[{
-            "id": "b1", "service_id": "glamour", "date": "2026-09-15", "time": "15:30",
+            "id": "b1", "service_id": "glamour", "date": "2026-09-15", "time": "15:00",
             "status": "confirmada", "duration_minutes": 150, "buffer_minutes": 0,
         }])
         fake.blocks.find_one = AsyncMock(return_value=None)
