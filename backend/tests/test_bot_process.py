@@ -63,5 +63,15 @@ class BotProcessTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ,{"OWNER_WHATSAPP":"5511888888888"}): await bot._process_owner_review_command(db)
         update=db.bookings.update_one.await_args.args[1]["$set"]; self.assertEqual(update["proof_status"],"rejeitado"); self.assertEqual(update["payment_status"],"rejeitado"); self.assertEqual(update["status"],"pendente")
 
+    async def test_reminders_only_claim_future_times_today(self):
+        bot = BotProcess("http://127.0.0.1:3002")
+        db = MagicMock()
+        db.bookings.find_one_and_update = AsyncMock(return_value=None)
+        await bot._send_due_reminders(db)
+        query = db.bookings.find_one_and_update.await_args.args[0]
+        self.assertEqual(query["status"], "confirmada")
+        self.assertIn("$gt", query["time"])
+        self.assertRegex(query["time"]["$gt"], r"^\d{2}:\d{2}$")
+
 
 if __name__ == "__main__": unittest.main()
