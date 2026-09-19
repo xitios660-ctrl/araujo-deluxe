@@ -99,6 +99,12 @@ class BotProcess:
             await self._clear_test_clients_once(db)
             while True:
                 try:
+                    # Owner approval/rejection messages are persisted by the WhatsApp
+                    # bot in wa_memories. Process them on every background tick so a
+                    # payment review sent through WhatsApp is reflected in bookings,
+                    # proofs and consequently in the admin panel without waiting for
+                    # another unrelated job.
+                    await self._process_owner_review_command(db)
                     if reminder_tick <= 0:
                         await self._send_due_reminders(db)
                         reminder_tick = 60
