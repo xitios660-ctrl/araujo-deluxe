@@ -4,7 +4,8 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node resilient-runner.js",
+    "test": "node --test *.test.js"
   },
   "dependencies": {
     "baileys": "^7.0.0-rc13",
