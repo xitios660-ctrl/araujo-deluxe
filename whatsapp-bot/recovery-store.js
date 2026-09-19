@@ -4,7 +4,7 @@ const { codec } = require("./session-store");
 
 const STORAGE_KEY = "recovery-state-v1";
 const MAX_SEEN = 2000;
-const MAX_OUTBOX = 200;
+const MAX_OUTBOX = 1000;
 const SEEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function emptyState() {
